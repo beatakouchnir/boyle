@@ -330,6 +330,51 @@ class GenerationCore:
         yield ("final", r)
 
 
+def tested_models() -> set:
+    from importlib import resources
+
+    with resources.files("boyle.data").joinpath("tested_models.json").open() as f:
+        return {r["model"] for r in json.load(f)["models"]}
+
+
+def classify_prefix_behavior(bmodel) -> tuple[str, str]:
+    """Probe, tokenizer-only, how this model's cache will behave across turns.
+
+    New families arrive with new templates and new cache types; the two
+    failure classes measured so far (Qwen3.5: history render differs from
+    generation render; hybrid caches cannot rewind) are both detectable
+    up front without loading a weight. Returns (class, human detail) where
+    class is "full" | "aligned" | "per-user-turn" | "unknown".
+    """
+    from mlx_lm.models.cache import can_trim_prompt_cache, make_prompt_cache
+
+    tok = bmodel.tokenizer
+    try:
+        msgs = [{"role": "user", "content": "Hi."}]
+        reply = "Hello there."
+        p1 = list(tok.apply_chat_template(
+            msgs, tokenize=True, add_generation_prompt=True,
+            enable_thinking=False))
+        candidate = p1 + list(tok.encode(reply, add_special_tokens=False))
+        hist = list(tok.apply_chat_template(
+            msgs + [{"role": "assistant", "content": reply},
+                    {"role": "user", "content": ""}],
+            tokenize=True, add_generation_prompt=False, enable_thinking=False))
+        faithful = _common_prefix_len(candidate, hist) >= len(p1)
+    except Exception as e:
+        return "unknown", f"template probe failed ({e}) — expect re-prefills"
+    if faithful:
+        return "full", "template roundtrip faithful — warm turns reuse everything"
+    if can_trim_prompt_cache(make_prompt_cache(bmodel.model)):
+        return "aligned", ("template re-renders history differently — handled "
+                           "by cache alignment; warm turns reuse everything")
+    return "per-user-turn", (
+        "template re-renders history differently AND this cache type cannot "
+        "rewind — tool loops stay warm within a user turn; each new user "
+        "turn re-prefills the conversation once"
+    )
+
+
 # --- HTTP layer -----------------------------------------------------------
 
 
@@ -774,7 +819,14 @@ def run_server(bmodel, model_id, tools_supported, host="127.0.0.1", port=None):
           f"slots {fmt_size(plan.slots_bytes)}, context {plan.max_context}")
     print(f"[boyle]   OpenAI-compatible: http://{host}:{actual}/v1")
     print(f"[boyle]   Ollama-compatible: http://{host}:{actual}")
-    print(f"[boyle]   tool calls: {'parsed (hermes)' if tools_supported else 'passthrough only'}")
+    print(f"[boyle]   tool calls: "
+          f"{'parsed (hermes + XML dialects)' if tools_supported else 'passthrough only — untested family'}")
+    cache_class, detail = classify_prefix_behavior(bmodel)
+    print(f"[boyle]   prefix cache [{cache_class}]: {detail}")
+    if model_id not in tested_models():
+        print("[boyle]   note: this exact model is not on the tested list "
+              "(see COMPATIBILITY.md) — the probes above are automatic, but "
+              "behavior beyond them is unverified")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

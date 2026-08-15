@@ -1,0 +1,35 @@
+{
+  "note": "Exact model ids explicitly qualified on real hardware. COMPATIBILITY.md is the human-readable view; tests/qualify.py produces new rows.",
+  "models": [
+    {
+      "model": "mlx-community/OLMoE-1B-7B-0125-Instruct-4bit",
+      "verified": "2026-08-14",
+      "checks": ["bit-identity vs resident", "server suite (both APIs)", "prefix cache full"]
+    },
+    {
+      "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "verified": "2026-08-14",
+      "checks": ["expert-major prefill text-identity vs resident", "anatomy/plan"]
+    },
+    {
+      "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+      "verified": "2026-08-14",
+      "checks": ["dense passthrough (0 MoE layers)", "tool-call exchange (hermes dialect)"]
+    },
+    {
+      "model": "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit",
+      "verified": "2026-08-14",
+      "checks": ["real OpenCode session (write/bash/edit tools)", "warm agent turn 3.3s", "context-overflow refusal"]
+    },
+    {
+      "model": "mlx-community/Qwen3-235B-A22B-Instruct-2507-4bit",
+      "verified": "2026-08-14",
+      "checks": ["bench vs predict out-of-sample (11.7 vs 12.5 band)", "anatomy/plan"]
+    },
+    {
+      "model": "mlx-community/Qwen3.5-397B-A17B-4bit",
+      "verified": "2026-08-14",
+      "checks": ["serve agent tool exchange (XML dialect)", "decode in forecast band (7.2)", "hybrid-cache class: per-user-turn re-prefill", "load 1.5s"]
+    }
+  ]
+}

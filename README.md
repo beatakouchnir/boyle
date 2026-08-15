@@ -118,6 +118,15 @@ an agent's warm turns re-prefill only the new suffix.
 | experimental | GLM-4.x/5.x MoE | passthrough | blocked on upstream mlx-lm support |
 | out of scope (v1) | dense models, CUDA/Linux, multi-user batching | | |
 
+**Untested models are announced, not undefined**: `serve` probes every model
+at startup (template roundtrip, cache rewindability) and tells you which
+prefix-cache class you're getting; `predict` labels measured curves vs
+priors. The exact tested list, what "tested" means, and the one-command
+qualification procedure for new releases live in
+[COMPATIBILITY.md](COMPATIBILITY.md) — new notable MoE releases get
+qualified promptly, and a release needing code (new tool dialect, new
+cache type) gets a tracking issue.
+
 ## Honest limits
 
 - **Single-stream by design.** Diverse-prompt batching is drive-bound
