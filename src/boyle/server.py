@@ -130,16 +130,60 @@ class GenerationCore:
             out.append(m)
         return out
 
-    def _tokenize_chat(self, messages, tools) -> list[int]:
+    def _tokenize_chat(self, messages, tools, generation: bool = True) -> list[int]:
         # enable_thinking=False: serving targets agents and chat UIs, where
         # interleaved reasoning in message.content breaks clients. Templates
         # without the variable simply ignore it (Qwen3/3.5 honor it).
-        kwargs = {"add_generation_prompt": True, "tokenize": True,
+        kwargs = {"add_generation_prompt": generation, "tokenize": True,
                   "enable_thinking": False}
         if tools:
             kwargs["tools"] = tools
         ids = self.m.tokenizer.apply_chat_template(self._normalize(messages), **kwargs)
         return list(ids)
+
+    @staticmethod
+    def reply_message(r: Reply) -> dict:
+        """The assistant message exactly as handlers return it to clients —
+        and therefore exactly as clients will echo it back next turn."""
+        msg = {"role": "assistant", "content": r.text or ""}
+        if r.tool_calls:
+            msg["tool_calls"] = r.tool_calls
+        return msg
+
+    def _align_cache(self, candidate: list[int], messages, tools, r: Reply) -> None:
+        """Trim the cache to the prefix the NEXT turn's render will agree with.
+
+        What we cache is prompt + raw generated tokens; what the next prompt
+        contains is the template's RE-RENDER of that exchange, and templates
+        are not roundtrip-faithful — measured on Qwen3.5: the generation
+        prompt seeds an empty <think> block that is kept while the assistant
+        message is FINAL but stripped once it becomes HISTORY, so an
+        unaligned cache misses from that point on (an 813-token re-prefill
+        in the 397B demo). The sentinel user message below forces the new
+        reply to render as history — exactly as every future prompt will
+        render it; the sentinel itself sits beyond any matchable prefix, so
+        its content is irrelevant. Aligning after every reply caps the
+        damage at the current reply's length instead of the rest of the
+        conversation.
+        """
+        from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
+
+        try:
+            canonical = self._tokenize_chat(
+                list(messages)
+                + [self.reply_message(r), {"role": "user", "content": ""}],
+                tools,
+                generation=False,
+            )
+        except Exception:  # template quirk: keep the unaligned cache
+            self._cache_ids = candidate
+            return
+        common = _common_prefix_len(candidate, canonical)
+        if common < len(candidate) and can_trim_prompt_cache(self._cache):
+            trim_prompt_cache(self._cache, len(candidate) - common)
+            self._cache_ids = candidate[:common]
+        else:
+            self._cache_ids = candidate
 
     # -- prefix cache ------------------------------------------------------
 
@@ -154,6 +198,12 @@ class GenerationCore:
         common = _common_prefix_len(self._cache_ids, tokens)
         # always leave at least one token to feed generation
         common = min(common, len(tokens) - 1)
+        if self._cache_ids:
+            logger.debug(
+                "prefix cache: %d cached, %d prompt, %d common (%.0f%%)",
+                len(self._cache_ids), len(tokens), common,
+                100 * common / max(1, min(len(self._cache_ids), len(tokens))),
+            )
         if self._cache is None or common <= 0:
             self._cache = make_prompt_cache(self.m.model)
             self._cache_ids = []
@@ -177,6 +227,7 @@ class GenerationCore:
         temperature: float,
         top_p: float,
         parse_tools: bool,
+        chat_ctx: tuple | None = None,
     ):
         """Returns an iterator of ("delta", text) events ending with
         ("final", Reply). Validation is EAGER — deliberately not a generator
@@ -184,6 +235,8 @@ class GenerationCore:
         can still send a clean 400. (It once fired lazily, after the 200 +
         chunked headers were already out, and the error body wrote a fresh
         status line into the live stream — clients saw InvalidHTTPResponse.)
+        ``chat_ctx=(messages, tools)`` enables post-generation cache
+        alignment for chat endpoints.
         """
         import queue
 
@@ -198,7 +251,7 @@ class GenerationCore:
                 )
             want = limit - len(tokens)
         out: "queue.Queue" = queue.Queue()
-        self._jobs.put(((tokens, want, temperature, top_p, parse_tools), out))
+        self._jobs.put(((tokens, want, temperature, top_p, parse_tools, chat_ctx), out))
 
         def _events():
             while True:
@@ -211,7 +264,8 @@ class GenerationCore:
 
         return _events()
 
-    def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools):
+    def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools,
+                            chat_ctx):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -254,7 +308,10 @@ class GenerationCore:
         r.completion_tokens = len(gen_ids)
         r.prompt_eval_s = (t_first or t_end) - t0
         r.eval_s = t_end - (t_first or t_end)
-        self._cache_ids = tokens + gen_ids
+        if chat_ctx is not None:
+            self._align_cache(tokens + gen_ids, chat_ctx[0], chat_ctx[1], r)
+        else:
+            self._cache_ids = tokens + gen_ids
         yield ("final", r)
 
 
@@ -444,7 +501,8 @@ def make_handler(core: GenerationCore):
             max_tokens, temp, top_p = self._gen_params(body)
             tokens = core._tokenize_chat(messages, tools)
             parse = bool(tools) and core.tools_supported
-            events = core.generate(tokens, max_tokens, temp, top_p, parse)
+            events = core.generate(tokens, max_tokens, temp, top_p, parse,
+                                   chat_ctx=(messages, tools))
             rid = f"chatcmpl-{int(time.time() * 1000)}"
 
             if body.get("stream"):
@@ -561,7 +619,8 @@ def make_handler(core: GenerationCore):
             max_tokens, temp, top_p = self._gen_params(body)
             tokens = core._tokenize_chat(messages, tools)
             parse = bool(tools) and core.tools_supported
-            events = core.generate(tokens, max_tokens, temp, top_p, parse)
+            events = core.generate(tokens, max_tokens, temp, top_p, parse,
+                                   chat_ctx=(messages, tools))
             name = body.get("model") or core.model_id
             stream = body.get("stream", True)
 

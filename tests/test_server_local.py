@@ -137,6 +137,44 @@ def test_context_overflow_refusal(server):
     assert "2048" in err["message"]
 
 
+def test_qwen35_template_alignment_tokenizer_only():
+    """Regression for the 397B demo's 813-token re-prefill: the Qwen3.5
+    template seeds an empty <think> block in every generation prompt but
+    re-renders plain-content assistant history WITHOUT it, so an unaligned
+    cache (prompt + raw generation) diverges at each assistant reply. The
+    alignment rule — trim to the prefix the canonical re-render agrees
+    with — must leave the next turn a small suffix, not the conversation."""
+    from mlx_lm.utils import load_tokenizer
+
+    from boyle.loader import _resolve_model_dir
+    from boyle.server import _common_prefix_len
+
+    tok = load_tokenizer(_resolve_model_dir("mlx-community/Qwen3.5-397B-A17B-4bit"))
+
+    def render(msgs, gen):
+        return list(tok.apply_chat_template(
+            msgs, tokenize=True, add_generation_prompt=gen, enable_thinking=False))
+
+    base = [{"role": "system", "content": "Agent."},
+            {"role": "user", "content": "Run the tests."}]
+    reply = "The tests passed. All good."
+
+    p1 = render(base, True)
+    candidate = p1 + tok.encode(reply, add_special_tokens=False) + [tok.eos_token_id]
+    # sentinel user message: the reply must render as HISTORY (the template
+    # keeps the think block on a final assistant message, strips it later)
+    canonical = render(base + [{"role": "assistant", "content": reply},
+                               {"role": "user", "content": ""}], False)
+    aligned = candidate[: _common_prefix_len(candidate, canonical)]
+
+    p2 = render(base + [{"role": "assistant", "content": reply},
+                        {"role": "user", "content": "Thanks."}], True)
+    # unaligned cache diverges before the reply; aligned cache is a clean prefix
+    assert _common_prefix_len(candidate, p2) < len(p1)  # the bug, demonstrated
+    assert p2[: len(aligned)] == aligned  # the fix: full reuse of aligned cache
+    assert len(p2) - len(aligned) < 60  # next turn pays a small suffix only
+
+
 def test_streaming_overflow_is_clean_400_and_socket_survives(server):
     """Regression: overflow on a STREAMING request once fired after the 200 +
     chunked headers were sent (lazy generator), writing a 400 status line
