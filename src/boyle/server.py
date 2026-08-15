@@ -131,7 +131,11 @@ class GenerationCore:
         return out
 
     def _tokenize_chat(self, messages, tools) -> list[int]:
-        kwargs = {"add_generation_prompt": True, "tokenize": True}
+        # enable_thinking=False: serving targets agents and chat UIs, where
+        # interleaved reasoning in message.content breaks clients. Templates
+        # without the variable simply ignore it (Qwen3/3.5 honor it).
+        kwargs = {"add_generation_prompt": True, "tokenize": True,
+                  "enable_thinking": False}
         if tools:
             kwargs["tools"] = tools
         ids = self.m.tokenizer.apply_chat_template(self._normalize(messages), **kwargs)

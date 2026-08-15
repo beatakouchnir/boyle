@@ -42,6 +42,28 @@ def test_plain_text_untouched():
     assert p.content == "just an answer" and p.tool_calls == []
 
 
+def test_xml_dialect_qwen35():
+    # verbatim shape observed from Qwen3.5-397B
+    text = ("I should run the tests.\n<tool_call>\n<function=run_tests>\n"
+            "<parameter=path>\ntests/unit\n</parameter>\n</function>\n</tool_call>")
+    p = parse_tool_calls(text)
+    assert p.finish_reason == "tool_calls"
+    assert p.content == "I should run the tests."
+    assert p.tool_calls[0]["function"]["name"] == "run_tests"
+    assert json.loads(p.tool_calls[0]["function"]["arguments"]) == {"path": "tests/unit"}
+
+
+def test_xml_dialect_typed_values_and_multiple_params():
+    text = ("<tool_call><function=search>"
+            "<parameter=query>hello world</parameter>"
+            "<parameter=limit>5</parameter>"
+            "<parameter=filters>{\"lang\": \"en\"}</parameter>"
+            "</function></tool_call>")
+    p = parse_tool_calls(text)
+    args = json.loads(p.tool_calls[0]["function"]["arguments"])
+    assert args == {"query": "hello world", "limit": 5, "filters": {"lang": "en"}}
+
+
 def test_safe_emit_holds_opener():
     emit, held = safe_emit_split("hello " + OPENER + '{"name"', False)
     assert emit == "hello "
