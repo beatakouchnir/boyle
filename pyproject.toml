@@ -1,0 +1,42 @@
+[project]
+name = "boyle"
+version = "0.0.1.dev0"
+description = "Run the model you want at the memory pressure you specify — budgeted MoE inference for Apple silicon"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{ name = "Beata Kouchnir" }]
+keywords = ["llm", "mlx", "mixture-of-experts", "offloading", "apple-silicon"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mlx>=0.26",
+    "mlx-lm>=0.24",
+    "numpy>=1.26",
+    "huggingface-hub>=0.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[project.scripts]
+boyle = "boyle.cli:main"
+
+[project.urls]
+Repository = "https://github.com/beatakouchnir/boyle"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/boyle"]
+
+[tool.ruff]
+line-length = 88

@@ -1,0 +1,14 @@
+boyle
+Copyright 2026 Beata Kouchnir
+
+This product includes software derived from omlx
+(https://github.com/jundot/omlx), licensed under the Apache License 2.0.
+
+Specifically, src/boyle/_runtime.py descends from the MoE expert-offload
+patch developed for omlx pull request #2595
+(omlx/patches/moe_expert_offload.py, origin commit c9924dbb), by way of an
+instrumented measurement workbench (moe-streaming-lab). Substantial
+modifications in this distribution include: direct (F_NOCACHE) store reads
+with parallel fetch, a colocated per-expert record store format, pooled
+record-based expert-major prefill as the default over-capacity prefill
+path, and removal of measurement-only and measured-ineffective code paths.
