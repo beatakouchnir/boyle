@@ -38,7 +38,10 @@ from boyle.budget import (
 )
 from boyle.loader import _resolve_model_dir, classify_specs, read_anatomy
 
-_TTFT_OVERHEAD = 2.0  # measured fill-vs-raw-bytes ratio at the 397B anchor
+# Worst-case fill ratio over raw bytes/bandwidth, refit 2026-08-14 to the
+# 397B serve demo (36.0s measured vs 9.3s raw at bw 15 GB/s -> 3.9; the
+# earlier 2.0 came from a shorter fill-heavy prompt and read ~2x low).
+_TTFT_OVERHEAD = 4.0
 _CAL_PATH = Path.home() / ".cache" / "boyle" / "calibration.json"
 _FALLBACK_BW = 5e9
 
@@ -278,8 +281,9 @@ class Forecast:
             f"(band {self.tok_s_lo:.1f}–{self.tok_s_hi:.1f}) — "
             f"expert hit rate ~{100 * self.hit_rate:.0f}% "
             f"[{self.curve_source}]",
-            f"  cold fill-heavy TTFT ~{self.ttft_cold_s:.0f} s (worst case); "
-            f"warm turns are prefix-cached",
+            f"  first request after load: up to ~{self.ttft_cold_s:.0f} s "
+            f"(cold expert fill; load itself is seconds); warm turns are "
+            f"prefix-cached",
             f"  context: {p.max_context} guaranteed at this budget "
             f"(headroom to ~{self.max_context_headroom})",
             f"  disk: {fmt_size(self.store_bytes)} checkpoint",

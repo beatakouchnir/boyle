@@ -175,15 +175,30 @@ class GenerationCore:
                 tools,
                 generation=False,
             )
-        except Exception:  # template quirk: keep the unaligned cache
+        except Exception as e:  # template quirk: keep the unaligned cache
+            logger.warning("cache alignment render failed (%s) — cache kept "
+                           "unaligned; warm turns may re-prefill", e)
             self._cache_ids = candidate
             return
         common = _common_prefix_len(candidate, canonical)
-        if common < len(candidate) and can_trim_prompt_cache(self._cache):
-            trim_prompt_cache(self._cache, len(candidate) - common)
-            self._cache_ids = candidate[:common]
-        else:
-            self._cache_ids = candidate
+        if common < len(candidate):
+            if can_trim_prompt_cache(self._cache):
+                trim_prompt_cache(self._cache, len(candidate) - common)
+                self._cache_ids = candidate[:common]
+                return
+            # Hybrid-attention caches (e.g. Qwen3.5) cannot rewind, so the
+            # aligned point is unreachable: keep the full cache. Tool loops
+            # within one user turn still reuse it 100% (the template keeps
+            # think blocks until the next user message); each NEW user turn
+            # then re-prefills once. Measured on 397B: warm tool turn 5.5s,
+            # per-user-turn rebuild ~35s. v1.1 design (fork-and-advance)
+            # is in the scope doc.
+            logger.info(
+                "cache alignment wants to trim %d tokens but this model's "
+                "cache is not trimmable — new user turns will re-prefill",
+                len(candidate) - common,
+            )
+        self._cache_ids = candidate
 
     # -- prefix cache ------------------------------------------------------
 
