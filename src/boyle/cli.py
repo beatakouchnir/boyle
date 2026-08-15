@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
         if verb == "bench":
             p.add_argument("--max-tokens", type=int, default=96)
             p.add_argument("--colo", help="colocated store dir")
+        if verb == "serve":
+            p.add_argument("--port", type=int, help="default: 11434 if free, else 11435")
+            p.add_argument("--host", default="127.0.0.1")
+            p.add_argument("--max-context", type=int, default=8192)
+            p.add_argument("--headroom", default="4GB")
+            p.add_argument("--colo", help="colocated store dir")
     args = parser.parse_args(argv)
     if args.verb is None:
         parser.print_help()
@@ -55,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         return _predict(args)
     if args.verb == "bench":
         return _bench(args)
+    if args.verb == "serve":
+        return _serve(args)
     print(f"boyle {args.verb}: not implemented yet (pre-release scaffold)",
           file=sys.stderr)
     return 2
@@ -116,6 +124,28 @@ def _bench(args) -> int:
         f"{fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}"
     )
     return 0 if within else 3
+
+
+def _serve(args) -> int:
+    from boyle.budget import BudgetError
+    from boyle.loader import load
+    from boyle.server import run_server
+
+    if not args.model or not args.budget:
+        print("boyle serve: model and --budget are required", file=sys.stderr)
+        return 2
+    try:
+        m = load(
+            args.model, budget=args.budget,
+            max_context=args.max_context, headroom=args.headroom,
+            colo_dir=args.colo,
+        )
+    except BudgetError as e:
+        print(f"boyle: {e}", file=sys.stderr)
+        return 1
+    tools_supported = "qwen" in args.model.lower()
+    run_server(m, args.model, tools_supported, host=args.host, port=args.port)
+    return 0
 
 
 def _run(args) -> int:
