@@ -174,7 +174,13 @@ class GenerationCore:
         top_p: float,
         parse_tools: bool,
     ):
-        """Yields ("delta", text) events, then ("final", Reply). Any thread."""
+        """Returns an iterator of ("delta", text) events ending with
+        ("final", Reply). Validation is EAGER — deliberately not a generator
+        function: ContextOverflow must fire on this call, while the handler
+        can still send a clean 400. (It once fired lazily, after the 200 +
+        chunked headers were already out, and the error body wrote a fresh
+        status line into the live stream — clients saw InvalidHTTPResponse.)
+        """
         import queue
 
         limit = self.m.plan.max_context
@@ -189,13 +195,17 @@ class GenerationCore:
             want = limit - len(tokens)
         out: "queue.Queue" = queue.Queue()
         self._jobs.put(((tokens, want, temperature, top_p, parse_tools), out))
-        while True:
-            event = out.get()
-            if event is None:
-                return
-            if event[0] == "error":
-                raise event[1]
-            yield event
+
+        def _events():
+            while True:
+                event = out.get()
+                if event is None:
+                    return
+                if event[0] == "error":
+                    raise event[1]
+                yield event
+
+        return _events()
 
     def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools):
         from mlx_lm import stream_generate
@@ -278,6 +288,7 @@ def make_handler(core: GenerationCore):
             self.send_header("Content-Type", content_type)
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
+            self._streaming = content_type
 
         def _chunk(self, data: bytes):
             self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
@@ -294,6 +305,18 @@ def make_handler(core: GenerationCore):
         # -- routing -------------------------------------------------------
 
         def do_GET(self):
+            try:
+                self._do_get()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            except Exception as e:
+                logger.exception("GET failed")
+                try:
+                    self._json({"error": str(e)}, 500)
+                except Exception:
+                    self.close_connection = True
+
+        def _do_get(self):
             if self.path == "/":
                 data = b"Ollama is running"
                 self.send_response(200)
@@ -328,6 +351,7 @@ def make_handler(core: GenerationCore):
                 self._json({"error": f"unknown path {self.path}"}, 404)
 
         def do_POST(self):
+            self._streaming = None
             try:
                 if self.path == "/v1/chat/completions":
                     self._oai_chat()
@@ -350,15 +374,35 @@ def make_handler(core: GenerationCore):
                 else:
                     self._json({"error": f"unknown path {self.path}"}, 404)
             except ContextOverflow as e:
-                self._json({"error": {"message": str(e), "type": "context_overflow"}}, 400)
-            except BrokenPipeError:
-                pass
+                self._error_out({"message": str(e), "type": "context_overflow"}, 400)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
             except Exception as e:
                 logger.exception("request failed")
-                try:
-                    self._json({"error": {"message": str(e), "type": "server_error"}}, 500)
-                except Exception:
-                    pass
+                self._error_out({"message": str(e), "type": "server_error"}, 500)
+
+        def _error_out(self, err: dict, status: int):
+            """Report an error without ever corrupting the wire protocol.
+
+            Before streaming: a normal JSON error response. After the 200 +
+            chunked headers are out, a status line would land inside the
+            chunk framing (clients report InvalidHTTPResponse and the
+            keep-alive socket is poisoned) — so instead terminate the stream
+            with an in-band error event and drop the connection.
+            """
+            try:
+                if not getattr(self, "_streaming", None):
+                    self._json({"error": err}, status)
+                    return
+                if self._streaming == "text/event-stream":
+                    self._sse({"error": err})
+                    self._chunk(b"data: [DONE]\n\n")
+                else:
+                    self._ndjson({"error": err["message"], "done": True})
+                self._end_chunks()
+            except Exception:
+                pass
+            self.close_connection = True
 
         # -- shared bits ---------------------------------------------------
 

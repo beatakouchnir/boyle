@@ -135,3 +135,32 @@ def test_context_overflow_refusal(server):
     err = json.loads(body)["error"]
     assert err["type"] == "context_overflow"
     assert "2048" in err["message"]
+
+
+def test_streaming_overflow_is_clean_400_and_socket_survives(server):
+    """Regression: overflow on a STREAMING request once fired after the 200 +
+    chunked headers were sent (lazy generator), writing a 400 status line
+    into the live stream — clients reported InvalidHTTPResponse and the
+    keep-alive socket was poisoned for the next request (seen in a real
+    OpenCode session at 8.2k tokens against the 8192 default)."""
+    import http.client
+
+    host, port = server.replace("http://", "").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=120)
+    huge = "word " * 4000
+    conn.request("POST", "/v1/chat/completions",
+                 json.dumps({"messages": [{"role": "user", "content": huge}],
+                             "max_tokens": 16, "stream": True}),
+                 {"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    assert resp.status == 400  # clean pre-stream refusal, not mid-stream junk
+    assert json.loads(resp.read())["error"]["type"] == "context_overflow"
+    # same socket must still serve the next request
+    conn.request("POST", "/v1/chat/completions",
+                 json.dumps({"messages": [{"role": "user", "content": "Say ok."}],
+                             "max_tokens": 8, "stream": True}),
+                 {"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    assert resp.status == 200
+    assert b"data: [DONE]" in resp.read()
+    conn.close()

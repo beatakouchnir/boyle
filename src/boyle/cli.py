@@ -48,7 +48,9 @@ def main(argv: list[str] | None = None) -> int:
         if verb == "serve":
             p.add_argument("--port", type=int, help="default: 11434 if free, else 11435")
             p.add_argument("--host", default="127.0.0.1")
-            p.add_argument("--max-context", type=int, default=8192)
+            # agent harnesses carry 5-8k-token system prompts; 8192 starves
+            # them (measured: OpenCode overflowed on its second task)
+            p.add_argument("--max-context", type=int, default=32768)
             p.add_argument("--headroom", default="4GB")
             p.add_argument("--colo", help="colocated store dir")
     args = parser.parse_args(argv)
