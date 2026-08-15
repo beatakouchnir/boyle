@@ -76,6 +76,7 @@ running it politely falls back and prints the URL.
 
 | harness | connect via | config |
 |---|---|---|
+| **Ollama CLI & Python library** | native | zero config — `ollama list/ps/show/run` and `ollama.chat(...)` (incl. tools) verified against boyle |
 | **OpenCode** | OpenAI-compatible | provider block below |
 | **Cline / Continue** (VS Code) | OpenAI-compatible | base URL `http://127.0.0.1:11434/v1`, any API key |
 | **Open WebUI** | Ollama connector | zero config when boyle holds port 11434 |

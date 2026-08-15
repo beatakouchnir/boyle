@@ -388,13 +388,21 @@ def make_handler(core: GenerationCore):
         # -- plumbing ------------------------------------------------------
 
         def _body(self) -> dict:
+            return getattr(self, "_payload", {})
+
+        def _drain_body(self) -> None:
+            """Read the request body exactly once, before routing. A handler
+            that skips its body leaves the bytes in the socket and corrupts
+            the next request line on a keep-alive connection (the official
+            ollama CLI hit this via POST /api/show)."""
             n = int(self.headers.get("Content-Length") or 0)
-            if not n:
-                return {}
-            try:
-                return json.loads(self.rfile.read(n))
-            except json.JSONDecodeError:
-                return {}
+            self._payload = {}
+            if n:
+                raw = self.rfile.read(n)
+                try:
+                    self._payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
 
         def _json(self, obj, status=200):
             data = json.dumps(obj).encode()
@@ -425,6 +433,14 @@ def make_handler(core: GenerationCore):
 
         # -- routing -------------------------------------------------------
 
+        def do_HEAD(self):
+            # the official ollama CLI health-checks with HEAD / before every
+            # command; an auto-501 here reads as "server broken"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self):
             try:
                 self._do_get()
@@ -451,7 +467,9 @@ def make_handler(core: GenerationCore):
                 self._json({"models": [self._ollama_model_card()]})
             elif self.path == "/api/ps":
                 card = self._ollama_model_card()
-                card["expires_at"] = "never"
+                # Go clients unmarshal this as time.Time — "never" breaks them
+                card["expires_at"] = "2099-01-01T00:00:00Z"
+                card["size_vram"] = card["size"]
                 self._json({"models": [card]})
             elif self.path == "/v1/models":
                 self._json(
@@ -473,6 +491,7 @@ def make_handler(core: GenerationCore):
 
         def do_POST(self):
             self._streaming = None
+            self._drain_body()
             try:
                 if self.path == "/v1/chat/completions":
                     self._oai_chat()
@@ -675,6 +694,13 @@ def make_handler(core: GenerationCore):
         def _ollama_chat(self):
             body = self._body()
             messages = body.get("messages") or []
+            if not messages:
+                # Ollama convention: empty request = load/keep-alive management
+                self._json({"model": body.get("model") or core.model_id,
+                            "created_at": _now_iso(),
+                            "message": {"role": "assistant", "content": ""},
+                            "done": True, "done_reason": "load"})
+                return
             tools = body.get("tools") or None
             max_tokens, temp, top_p = self._gen_params(body)
             tokens = core._tokenize_chat(messages, tools)
@@ -736,6 +762,11 @@ def make_handler(core: GenerationCore):
         def _ollama_generate(self):
             body = self._body()
             prompt = body.get("prompt") or ""
+            if not prompt:
+                self._json({"model": body.get("model") or core.model_id,
+                            "created_at": _now_iso(), "response": "",
+                            "done": True, "done_reason": "load"})
+                return
             max_tokens, temp, top_p = self._gen_params(body)
             tokens = list(core.m.tokenizer.encode(prompt))
             events = core.generate(tokens, max_tokens, temp, top_p, False)

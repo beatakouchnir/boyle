@@ -126,6 +126,38 @@ def test_ollama_chat_ndjson_with_real_timings(server):
     assert any(o["message"]["content"] for o in objs[:-1])
 
 
+def test_ollama_cli_protocol_regressions(server):
+    """The official ollama CLI exposed two wire bugs: it health-checks with
+    HEAD / (auto-501'd), and POST /api/show's unread body desynced the
+    keep-alive connection so the next request line began mid-JSON."""
+    import http.client
+
+    host, port = server.replace("http://", "").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=60)
+    # HEAD / must be 200, empty body
+    conn.request("HEAD", "/")
+    r = conn.getresponse()
+    assert r.status == 200 and r.read() == b""
+    # POST /api/show then ANOTHER request on the same socket must parse
+    conn.request("POST", "/api/show",
+                 json.dumps({"model": "x", "system": "", "template": "",
+                             "verbose": False}),
+                 {"Content-Type": "application/json"})
+    r = conn.getresponse()
+    assert r.status == 200 and "capabilities" in json.loads(r.read())
+    conn.request("GET", "/api/tags")
+    r = conn.getresponse()
+    assert r.status == 200 and json.loads(r.read())["models"]
+    # empty-prompt generate = Ollama's load probe: ack, don't generate
+    conn.request("POST", "/api/generate",
+                 json.dumps({"model": "x", "prompt": ""}),
+                 {"Content-Type": "application/json"})
+    r = conn.getresponse()
+    body = json.loads(r.read())
+    assert body["done"] is True and body["done_reason"] == "load"
+    conn.close()
+
+
 def test_context_overflow_refusal(server):
     huge = "word " * 4000  # ~4k tokens >> 2048 context
     status, body = _post(server, "/v1/chat/completions", {
