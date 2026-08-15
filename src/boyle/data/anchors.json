@@ -1,0 +1,53 @@
+{
+  "machine": "Apple M5 Max, 128 GB unified memory",
+  "bandwidth_bytes_s": 12600000000,
+  "note": "Measured single-stream decode anchors from the research record. base_ms derived from an anchor transfers to other machines only as a GPU-class guess; `boyle bench` closes the loop locally.",
+  "anchors": [
+    {
+      "family": "qwen3_moe",
+      "model": "mlx-community/Qwen3-235B-A22B-Instruct-2507-4bit",
+      "quant_bits": 4,
+      "fraction": 0.64,
+      "tok_s": 15.5,
+      "source": "lab E12-era headline (direct I/O + parallel install)"
+    },
+    {
+      "family": "qwen3_moe",
+      "model": "mlx-community/Qwen3-235B-A22B-Instruct-2507-8bit",
+      "quant_bits": 8,
+      "fraction": 0.34,
+      "tok_s": 3.16,
+      "source": "lab E9 quality ladder",
+      "runtime": "memmap",
+      "exclude_from_base": true,
+      "exclude_reason": "measured before direct I/O landed; its slowness is the old fetch path, not compute"
+    },
+    {
+      "family": "qwen3_5_moe",
+      "model": "mlx-community/Qwen3.5-397B-A17B-4bit",
+      "quant_bits": 4,
+      "fraction": 0.36,
+      "tok_s": 8.8,
+      "ttft_s": 20.9,
+      "ttft_note": "fill-heavy prompt, colocated store, pooled expert-major prefill",
+      "source": "lab E10 sustained + E17b"
+    },
+    {
+      "family": "glm_moe_dsa",
+      "quant_bits": 4,
+      "fraction": 0.19,
+      "tok_s": 1.72,
+      "source": "lab E13 (GLM-5.2 418 GB)"
+    },
+    {
+      "family": "gemma4",
+      "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "quant_bits": 4,
+      "fraction": 0.5,
+      "tok_s": 46.9,
+      "source": "quantize BENCHMARKS §3 cap-64 (older runtime: memmap reads, bookkeeping overhead included)",
+      "runtime": "memmap",
+      "base_note": "only anchor for this family; base absorbs the older fetch path, so speed forecasts run conservative"
+    }
+  ]
+}

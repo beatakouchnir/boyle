@@ -57,27 +57,25 @@ _STACKED = re.compile(
 )
 
 
-def read_anatomy(model_dir: str | Path) -> ModelAnatomy:
-    """Model memory anatomy from checkpoint headers + config.json only.
+def classify_specs(
+    specs: dict[str, tuple[tuple, str]], config: dict | None
+) -> ModelAnatomy:
+    """Anatomy from tensor names/shapes/dtypes + (optionally) config.json.
 
     Expert tensors are recognized structurally, not by family knowledge:
     either the per-expert naming scheme (``...experts.<e>...``) or stacked
     switch projections (3-D ``[E, out, in]`` gate/up/down tensors). The
     expert count per layer comes from the tensors themselves, so a new MoE
-    family needs no config-key archaeology to plan a budget.
+    family needs no config-key archaeology to plan a budget. Shared by the
+    local loader (store headers) and predict's remote path (ranged HTTP
+    header reads) — one classifier, one set of bugs.
     """
-    model_dir = Path(model_dir)
-    store = CheckpointExpertStore(model_dir, direct=False)
-    if not store:
-        raise FileNotFoundError(f"no safetensors under {model_dir}")
-
     layer_bytes: dict[int, int] = {}
     layer_experts: dict[int, set] = {}
     expert_total = 0
     total = 0
     itemsize = {"BF16": 2, "F16": 2, "F32": 4, "U32": 4, "I32": 4, "U8": 1}
-    for name in list(store._specs):
-        shape, dtype = store.spec(name)
+    for name, (shape, dtype) in specs.items():
         nbytes = int(np.prod(shape)) * itemsize.get(dtype, 2) if shape else 0
         total += nbytes
         m = _PER_EXPERT.search(name)
@@ -102,10 +100,8 @@ def read_anatomy(model_dir: str | Path) -> ModelAnatomy:
         layers.append((int(n), layer_bytes[layer]))
 
     kv_per_token = 0
-    config_path = model_dir / "config.json"
-    if config_path.exists():
-        cfg = json.loads(config_path.read_text())
-        cfg = cfg.get("text_config", cfg)
+    if config is not None:
+        cfg = config.get("text_config", config)
         n_layers = cfg.get("num_hidden_layers")
         kv_heads = cfg.get("num_key_value_heads") or cfg.get("num_attention_heads")
         head_dim = cfg.get("head_dim") or (
@@ -123,6 +119,20 @@ def read_anatomy(model_dir: str | Path) -> ModelAnatomy:
         layers=tuple(layers),
         kv_bytes_per_token=kv_per_token,
     )
+
+
+def read_anatomy(model_dir: str | Path) -> ModelAnatomy:
+    """Local anatomy: checkpoint headers + config.json, no weights touched."""
+    model_dir = Path(model_dir)
+    store = CheckpointExpertStore(model_dir, direct=False)
+    if not store:
+        raise FileNotFoundError(f"no safetensors under {model_dir}")
+    specs = {name: store.spec(name) for name in store._specs}
+    config = None
+    config_path = model_dir / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+    return classify_specs(specs, config)
 
 
 @dataclass

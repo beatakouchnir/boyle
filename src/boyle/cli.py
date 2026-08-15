@@ -39,15 +39,83 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--max-tokens", type=int, default=512)
             p.add_argument("--max-context", type=int, default=8192)
             p.add_argument("--colo", help="colocated store dir (boyle build output)")
+        if verb in ("predict", "bench"):
+            p.add_argument("--max-context", type=int, default=8192)
+            p.add_argument("--headroom", default="4GB")
+        if verb == "bench":
+            p.add_argument("--max-tokens", type=int, default=96)
+            p.add_argument("--colo", help="colocated store dir")
     args = parser.parse_args(argv)
     if args.verb is None:
         parser.print_help()
         return 0
     if args.verb == "run":
         return _run(args)
+    if args.verb == "predict":
+        return _predict(args)
+    if args.verb == "bench":
+        return _bench(args)
     print(f"boyle {args.verb}: not implemented yet (pre-release scaffold)",
           file=sys.stderr)
     return 2
+
+
+def _predict(args) -> int:
+    from boyle.predict import predict
+
+    if not args.model or not args.budget:
+        print("boyle predict: model and --budget are required", file=sys.stderr)
+        return 2
+    f = predict(
+        args.model, args.budget,
+        max_context=args.max_context, headroom=args.headroom,
+    )
+    print(f.render())
+    return 0 if f.fits else 1
+
+
+def _bench(args) -> int:
+    """Measure this machine against the forecast — the trust loop."""
+    import time
+
+    from boyle.loader import load
+    from boyle.predict import predict
+
+    if not args.model or not args.budget:
+        print("boyle bench: model and --budget are required", file=sys.stderr)
+        return 2
+    fc = predict(
+        args.model, args.budget,
+        max_context=args.max_context, headroom=args.headroom,
+    )
+    if not fc.fits:
+        print(fc.render())
+        return 1
+    print(f"[bench] predicted {fc.tok_s:.1f} tok/s "
+          f"(band {fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}); loading...",
+          file=sys.stderr)
+    m = load(
+        args.model, budget=args.budget,
+        max_context=args.max_context, headroom=args.headroom,
+        colo_dir=args.colo,
+    )
+    prompt = "Write a detailed, factual overview of how solid-state drives work."
+    t0 = time.perf_counter()
+    times = []
+    for r in m.generate(prompt, max_tokens=args.max_tokens):
+        times.append(time.perf_counter())
+    ttft = times[0] - t0
+    steady = times[len(times) // 3 :]
+    tok_s = (len(steady) - 1) / (steady[-1] - steady[0])
+    s = m.stats()
+    within = fc.tok_s_lo <= tok_s <= fc.tok_s_hi
+    print(
+        f"[bench] measured {tok_s:.1f} tok/s steady "
+        f"(TTFT {ttft:.1f}s, hit rate {100 * (s['hit_rate'] or 0):.1f}%) — "
+        f"{'WITHIN' if within else 'OUTSIDE'} the predicted band "
+        f"{fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}"
+    )
+    return 0 if within else 3
 
 
 def _run(args) -> int:

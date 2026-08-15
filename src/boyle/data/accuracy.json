@@ -1,0 +1,30 @@
+{
+  "notes": [
+    "Exact expert offload never changes which expert runs, so it preserves accuracy by construction; the whole cost is latency (clausius F3-F6: an offloaded 35B at 3.40 GB scores 0.9447 on gsm8k where a natively-fitting 4B at 3.91 GB scores 0.8426; same ordering on popqa +13.9pp and mmlu_pro +20.9pp).",
+    "Quantization is the axis that can hurt, and task-dependently: under the same 4-bit quant, factual QA loses ~1.5pp where structured generation loses 18-21pp (clausius F11).",
+    "boyle forecasts speed; it never forecasts accuracy. Rows below are measurements, present only where someone measured."
+  ],
+  "rows": [
+    {
+      "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "family": "gemma4",
+      "quant_bits": 4,
+      "task": "ghostlight crossmodel probe",
+      "score": 0.833,
+      "reference": "bf16 source scores 0.844 on the same probe",
+      "n": 18,
+      "source": "quantize BENCHMARKS §2",
+      "note": "The cliff is between 3 and 4 bits: 3-bit scores 0.278, 2-bit is gibberish. Every sub-4-bit artifact is dominated."
+    },
+    {
+      "model": "mlx-community/Qwen3.5-397B-A17B-4bit",
+      "family": "qwen3_5_moe",
+      "quant_bits": 4,
+      "task": "gsm8k (answer mode)",
+      "score": 0.96,
+      "n": 100,
+      "source": "lab E14 (publication pending)",
+      "note": "Measured under offload at fraction 0.36 — offload exactness means this is the model's score, not the offload config's."
+    }
+  ]
+}
