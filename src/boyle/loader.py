@@ -30,7 +30,7 @@ from boyle.budget import BudgetPlan, ModelAnatomy, plan as resolve_budget
 
 logger = logging.getLogger(__name__)
 
-_MODEL_FILES = ["*.safetensors", "*.json", "tokenizer*", "*.txt", "*.model"]
+_MODEL_FILES = ["*.safetensors", "*.json", "tokenizer*", "*.txt", "*.model", "*.jinja"]
 
 
 def _resolve_model_dir(model: str | Path) -> Path:
