@@ -171,6 +171,22 @@ def test_ollama_generate_applies_chat_template(server):
     assert "ready" in r["response"].lower()  # instruct behavior => template applied
 
 
+def test_finish_reason_reports_length_on_cap(server):
+    """A generation that hits max_tokens must say so: finish_reason length /
+    done_reason length — szilard's first smoke caught truncated thinking
+    scored as clean because this defaulted to stop."""
+    status, body = _post(server, "/v1/chat/completions", {
+        "messages": [{"role": "user", "content": "Count upward forever: 1, 2, 3,"}],
+        "max_tokens": 8, "temperature": 0.0})
+    r = json.loads(body)
+    assert r["choices"][0]["finish_reason"] == "length"
+    status, body = _post(server, "/api/chat", {
+        "model": "x", "stream": False,
+        "messages": [{"role": "user", "content": "Count upward forever: 1, 2, 3,"}],
+        "options": {"num_predict": 8}})
+    assert json.loads(body)["done_reason"] == "length"
+
+
 def test_context_overflow_refusal(server):
     huge = "word " * 4000  # ~4k tokens >> 2048 context
     status, body = _post(server, "/v1/chat/completions", {

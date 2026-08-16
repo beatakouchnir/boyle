@@ -296,6 +296,7 @@ class GenerationCore:
         t_first = None
         gen_ids = []
         held = ""
+        gen_finish = "stop"
         for out in stream_generate(
             self.m.model,
             self.m.tokenizer,
@@ -307,6 +308,8 @@ class GenerationCore:
             if t_first is None:
                 t_first = time.perf_counter()
             gen_ids.append(out.token)
+            if getattr(out, "finish_reason", None):
+                gen_finish = out.finish_reason
             if parse_tools:
                 emit, held = safe_emit_split(held + out.text, False)
                 if emit:
@@ -316,10 +319,15 @@ class GenerationCore:
                 r.text += out.text
                 yield ("delta", out.text)
         t_end = time.perf_counter()
+        # honest termination cause: a hit max_tokens must read "length", not
+        # "stop" — szilard's smoke caught truncated thinking scored as clean
+        # because this defaulted to stop (the truncation-masquerade lesson)
+        r.finish_reason = gen_finish
         if parse_tools:
             parsed = parse_tool_calls(r.text + held)
             r.tool_calls = parsed.tool_calls
-            r.finish_reason = parsed.finish_reason
+            if parsed.tool_calls:
+                r.finish_reason = parsed.finish_reason
             if parsed.tool_calls:
                 r.text = parsed.content
             elif held:  # held tail was a false alarm, flush it
