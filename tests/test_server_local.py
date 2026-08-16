@@ -158,6 +158,19 @@ def test_ollama_cli_protocol_regressions(server):
     conn.close()
 
 
+def test_ollama_generate_applies_chat_template(server):
+    """Old ollama CLIs drive `run` through /api/generate; per Ollama
+    semantics the prompt goes through the chat template unless raw:true.
+    Bare text fed to an instruct model free-associates (M1, year-old CLI)."""
+    status, body = _post(server, "/api/generate", {
+        "model": "x", "prompt": "Reply with the single word: ready",
+        "stream": False, "options": {"num_predict": 12, "temperature": 0.0}})
+    assert status == 200
+    r = json.loads(body)
+    assert r["done"] and r["done_reason"] in ("stop", "length")
+    assert "ready" in r["response"].lower()  # instruct behavior => template applied
+
+
 def test_context_overflow_refusal(server):
     huge = "word " * 4000  # ~4k tokens >> 2048 context
     status, body = _post(server, "/v1/chat/completions", {

@@ -771,7 +771,19 @@ def make_handler(core: GenerationCore):
                             "done": True, "done_reason": "load"})
                 return
             max_tokens, temp, top_p = self._gen_params(body)
-            tokens = list(core.m.tokenizer.encode(prompt))
+            if body.get("raw"):
+                tokens = list(core.m.tokenizer.encode(prompt))
+            else:
+                # Ollama semantics: /api/generate applies the chat template
+                # unless raw:true. Older ollama CLIs drive `run` through this
+                # endpoint; feeding an instruct model bare text produced
+                # free-associating repetition loops (found by a year-old CLI
+                # on the M1).
+                msgs = []
+                if body.get("system"):
+                    msgs.append({"role": "system", "content": body["system"]})
+                msgs.append({"role": "user", "content": prompt})
+                tokens = core._tokenize_chat(msgs, None)
             events = core.generate(tokens, max_tokens, temp, top_p, False)
             name = body.get("model") or core.model_id
             if body.get("stream", True):
