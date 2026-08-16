@@ -75,12 +75,14 @@ class GenerationCore:
     makes request ordering genuinely FIFO, which a bare Lock is not.
     """
 
-    def __init__(self, bmodel, model_id: str, tools_supported: bool):
+    def __init__(self, bmodel, model_id: str, tools_supported: bool,
+                 default_temperature: float = 0.7):
         import queue
 
         self.m = bmodel
         self.model_id = model_id
         self.tools_supported = tools_supported
+        self.default_temperature = default_temperature
         self._cache = None
         self._cache_ids: list[int] = []
         # Warm up ON THE LOADING THREAD before any worker generation:
@@ -567,7 +569,8 @@ def make_handler(core: GenerationCore):
             return (
                 body.get("max_tokens") or body.get("max_completion_tokens")
                 or opts.get("num_predict"),
-                float(body.get("temperature", opts.get("temperature", 0.7))),
+                float(body.get("temperature",
+                               opts.get("temperature", core.default_temperature))),
                 float(body.get("top_p", opts.get("top_p", 1.0))),
             )
 
@@ -821,9 +824,11 @@ def serve(
     tools_supported: bool,
     host: str = "127.0.0.1",
     port: int | None = None,
+    default_temperature: float = 0.7,
 ) -> tuple[ThreadingHTTPServer, int]:
     """Bind (with the polite port policy) and return the server, unstarted."""
-    core = GenerationCore(bmodel, model_id, tools_supported)
+    core = GenerationCore(bmodel, model_id, tools_supported,
+                          default_temperature=default_temperature)
     handler = make_handler(core)
     candidates = [port] if port else [OLLAMA_PORT, FALLBACK_PORT, 0]
     last_err = None
@@ -842,8 +847,10 @@ def serve(
     raise last_err
 
 
-def run_server(bmodel, model_id, tools_supported, host="127.0.0.1", port=None):
-    httpd, actual = serve(bmodel, model_id, tools_supported, host, port)
+def run_server(bmodel, model_id, tools_supported, host="127.0.0.1", port=None,
+               default_temperature=0.7):
+    httpd, actual = serve(bmodel, model_id, tools_supported, host, port,
+                          default_temperature=default_temperature)
     plan = bmodel.plan
     print(f"[boyle] serving {model_id}")
     print(f"[boyle]   budget: fraction {plan.fraction:.2f}, "

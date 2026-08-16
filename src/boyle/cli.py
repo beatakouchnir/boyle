@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--max-context", type=int, default=32768)
             p.add_argument("--headroom", default="4GB")
             p.add_argument("--colo", help="colocated store dir")
+            p.add_argument("--temperature", type=float, default=0.7,
+                           help="server default when the client sends none")
     args = parser.parse_args(argv)
     if args.verb is None:
         parser.print_help()
@@ -146,7 +148,8 @@ def _serve(args) -> int:
         print(f"boyle: {e}", file=sys.stderr)
         return 1
     tools_supported = "qwen" in args.model.lower()
-    run_server(m, args.model, tools_supported, host=args.host, port=args.port)
+    run_server(m, args.model, tools_supported, host=args.host, port=args.port,
+               default_temperature=args.temperature)
     return 0
 
 

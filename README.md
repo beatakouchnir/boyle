@@ -13,6 +13,8 @@ boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB   # before down
 boyle serve   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
 ```
 
+![boyle predict: a 224 GB model forecast from headers alone, nothing downloaded](docs/media/predict.gif)
+
 *Named for Robert Boyle: PV = k. What you trade for pressure here is speed,
 and the exchange rate is measured.*
 
@@ -73,6 +75,8 @@ line is lookup into measured rows, or silence.
 real timing fields so UIs show true tok/s). It binds port 11434 when free,
 so Ollama-first apps discover it with zero config; if a real Ollama is
 running it politely falls back and prints the URL.
+
+![the official ollama CLI talking to boyle with zero config](docs/media/ollama.gif)
 
 | harness | connect via | config |
 |---|---|---|
