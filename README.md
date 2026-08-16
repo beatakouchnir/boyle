@@ -18,8 +18,9 @@ boyle serve   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
 *Named for Robert Boyle: PV = k. What you trade for pressure here is speed,
 and the exchange rate is measured.*
 
-> **Status: pre-release.** Working today: `predict`, `run`, `serve`, `bench`.
-> Landing before v1: `build` (colocated stores) and `trace`. Not yet on PyPI.
+> **Status: v0.1.** Working today: `predict`, `run`, `serve`, `bench`,
+> `build`. Landing in v0.2: `trace` (routing capture that adds unmeasured
+> families to `predict`'s curves and orders stores by co-activation).
 
 ## What a budget buys you — measured, one machine (M5 Max, 128 GB)
 
@@ -68,6 +69,42 @@ Forecasts are honest about their provenance: measured family curve vs
 flat-routing prior, compute anchor vs I/O-only upper bound — the output
 says which you're getting. **Accuracy is never forecast**; the accuracy
 line is lookup into measured rows, or silence.
+
+## The rest of the CLI
+
+`run` — one-shot or scripted generation, with the honest footer:
+
+```
+$ boyle run mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB \
+    -p "In one sentence: what does a hash table do?" --max-tokens 40
+[boyle] fraction=0.387 slots=6.24 GB max_context=8192
+A hash table stores key-value pairs and uses a hash function to quickly map
+keys to indices in an array, enabling fast data retrieval. [...]
+[boyle] 40 tokens in 1.8s (21.8 tok/s) — expert cache hit rate 78.9%
+```
+
+`bench` — the trust loop, measured on this machine vs the forecast
+(output below is the real run from a 2021 M1 Pro 32 GB):
+
+```
+$ boyle bench mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
+[bench] predicted 14.7 tok/s (band 11.8–18.4); loading...
+[bench] measured 14.5 tok/s steady (TTFT 2.8s, hit rate 87.3%) — WITHIN the predicted band 11.8–18.4
+```
+
+`build` — a colocated expert store: one contiguous read per cache miss
+instead of nine scattered ones (+13% on the measured serving ceiling;
+outputs verified token-identical to direct checkpoint reads):
+
+```
+$ boyle build mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
+[build] layer 48/48: 16.3 GB written
+[build] colo store: 16.31 GB -> ~/.cache/boyle/stores/mlx-community--Qwen3-30B-A3B-Instruct-2507-4bit
+$ boyle serve mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB --colo ~/.cache/boyle/stores/...
+```
+
+Stacked checkpoints only (Qwen, gemma lineage); per-expert-scheme
+checkpoints (OLMoE) are read directly by the runtime and need no store.
 
 ## Works with your tools
 

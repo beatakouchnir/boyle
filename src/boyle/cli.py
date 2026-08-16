@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--max-tokens", type=int, default=512)
             p.add_argument("--max-context", type=int, default=8192)
             p.add_argument("--colo", help="colocated store dir (boyle build output)")
+        if verb == "build":
+            p.add_argument("--out", help="store dir (default: ~/.cache/boyle/stores/<model>)")
         if verb in ("predict", "bench"):
             p.add_argument("--max-context", type=int, default=8192)
             p.add_argument("--headroom", default="4GB")
@@ -67,8 +69,15 @@ def main(argv: list[str] | None = None) -> int:
         return _bench(args)
     if args.verb == "serve":
         return _serve(args)
-    print(f"boyle {args.verb}: not implemented yet (pre-release scaffold)",
-          file=sys.stderr)
+    if args.verb == "build":
+        if not args.model:
+            print("boyle build: model is required", file=sys.stderr)
+            return 2
+        from boyle.build import build_store
+
+        build_store(args.model, args.out)
+        return 0
+    print(f"boyle {args.verb}: planned for v0.2", file=sys.stderr)
     return 2
 
 
