@@ -28,12 +28,13 @@
     },
     {
       "model": "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit",
-      "verified": "2026-08-14",
+      "verified": "2026-08-15",
       "checks": [
         "real OpenCode session (write/bash/edit tools)",
         "warm agent turn 3.3s",
         "context-overflow refusal",
-        "cross-machine: 2021 M1 Pro 32 GB \u2014 qualify clean, bench 14.5 vs 14.7 forecast (within band)"
+        "cross-machine: 2021 M1 Pro 32 GB \u2014 qualify clean, bench 14.5 vs 14.7 forecast (within band)",
+        "real-Ollama coexistence + old-CLI /api/generate (templated) on M1"
       ]
     },
     {
