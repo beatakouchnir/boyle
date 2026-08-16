@@ -26,6 +26,7 @@ and the exchange rate is measured.*
 | model | on disk | budget | decode | how verified |
 |---|---|---|---|---|
 | Qwen3-30B-A3B-4bit | 17 GB | 12 GB | ~18 tok/s | real OpenCode session; warm agent turn **3.3 s** (cold 28.7 s) |
+| Qwen3-30B-A3B-4bit, **2021 M1 Pro 32 GB** | 17 GB | 12 GB | **14.5 tok/s** | `bench` vs a forecast made before the machine was ever measured: predicted 14.7 — off by 1.4%. At 20 GB: 17.5 vs 19.3 predicted, in band |
 | Qwen3-235B-A22B-4bit | 132 GB | 70 GB | **11.7 tok/s** | `bench`, within the pre-run forecast band (12.5 ± 25%) |
 | Qwen3-235B-A22B-4bit | 132 GB | 90 GB | ~15.5 tok/s | research-record anchor |
 | Qwen3.5-397B-A17B-4bit | 224 GB | 90 GB | **7.2 tok/s** | live agent tool-exchange behind `serve`; **load 1.5 s**; forecast band 7.6–11.9 |

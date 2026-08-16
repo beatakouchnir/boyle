@@ -46,7 +46,10 @@ A trace-driven simulator built on that curve predicted live hit rates within
 inside boyle, predicted 12.5 tok/s for a 235B configuration nobody had
 measured; the live bench read 11.7. The curves are quant-independent:
 distilling the 4-bit and 8-bit routing traces of the same model produces
-identical curves.
+identical curves. And the forecast transfers across machines: on a 2021
+M1 Pro (32 GB — different GPU class, different disk, probed locally), the
+same machinery predicted 14.7 tok/s for a 30B model in a 12 GB budget;
+the live bench measured 14.5.
 
 Measured single-stream decode (bit-identical outputs, 128 GB machine):
 

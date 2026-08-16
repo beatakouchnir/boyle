@@ -840,7 +840,8 @@ def serve(
             if not port and cand != OLLAMA_PORT:
                 print(f"[boyle] port {OLLAMA_PORT} is taken (a real Ollama?) — "
                       f"serving on {actual}; Ollama-first apps need the URL "
-                      f"http://{host}:{actual} configured explicitly")
+                      f"http://{host}:{actual} configured explicitly, e.g.\n"
+                      f"[boyle]   OLLAMA_HOST={host}:{actual} ollama run <model> ...")
             return httpd, actual
         except OSError as e:
             last_err = e
