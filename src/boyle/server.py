@@ -132,12 +132,15 @@ class GenerationCore:
             out.append(m)
         return out
 
-    def _tokenize_chat(self, messages, tools, generation: bool = True) -> list[int]:
-        # enable_thinking=False: serving targets agents and chat UIs, where
-        # interleaved reasoning in message.content breaks clients. Templates
-        # without the variable simply ignore it (Qwen3/3.5 honor it).
+    def _tokenize_chat(self, messages, tools, generation: bool = True,
+                       thinking: bool = False) -> list[int]:
+        # thinking defaults OFF: serving targets agents and chat UIs, where
+        # interleaved reasoning in message.content breaks clients. Callers
+        # opt in per request (OpenAI extra field "enable_thinking"; Ollama
+        # "think"). Templates without the variable simply ignore it
+        # (Qwen3/3.5 honor it).
         kwargs = {"add_generation_prompt": generation, "tokenize": True,
-                  "enable_thinking": False}
+                  "enable_thinking": thinking}
         if tools:
             kwargs["tools"] = tools
         ids = self.m.tokenizer.apply_chat_template(self._normalize(messages), **kwargs)
@@ -581,7 +584,8 @@ def make_handler(core: GenerationCore):
             messages = body.get("messages") or []
             tools = body.get("tools") or None
             max_tokens, temp, top_p = self._gen_params(body)
-            tokens = core._tokenize_chat(messages, tools)
+            thinking = bool(body.get("enable_thinking") or body.get("think"))
+            tokens = core._tokenize_chat(messages, tools, thinking=thinking)
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools))
@@ -706,7 +710,8 @@ def make_handler(core: GenerationCore):
                 return
             tools = body.get("tools") or None
             max_tokens, temp, top_p = self._gen_params(body)
-            tokens = core._tokenize_chat(messages, tools)
+            thinking = bool(body.get("think") or body.get("enable_thinking"))
+            tokens = core._tokenize_chat(messages, tools, thinking=thinking)
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools))

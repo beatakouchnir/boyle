@@ -220,6 +220,29 @@ def test_qwen35_template_alignment_tokenizer_only():
     assert len(p2) - len(aligned) < 60  # next turn pays a small suffix only
 
 
+def test_thinking_flag_changes_generation_prompt():
+    """Per-request thinking control (szilard S1 dependency): thinking=False
+    pre-closes the think block in the generation prompt; True leaves it to
+    the model. Tokenizer-only, real Qwen3.5 template."""
+    from mlx_lm.utils import load_tokenizer
+
+    from boyle.loader import _resolve_model_dir
+
+    tok = load_tokenizer(_resolve_model_dir("mlx-community/Qwen3.5-397B-A17B-4bit"))
+    msgs = [{"role": "user", "content": "Hi."}]
+
+    def render(thinking):
+        ids = tok.apply_chat_template(msgs, tokenize=True,
+                                      add_generation_prompt=True,
+                                      enable_thinking=thinking)
+        return tok.decode(list(ids)[-12:])
+
+    off, on = render(False), render(True)
+    assert off != on
+    assert "<think>" in off and "</think>" in off  # pre-closed = skip
+    assert "</think>" not in on  # model gets to think
+
+
 def test_streaming_overflow_is_clean_400_and_socket_survives(server):
     """Regression: overflow on a STREAMING request once fired after the 200 +
     chunked headers were sent (lazy generator), writing a 400 status line
