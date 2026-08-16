@@ -1,5 +1,9 @@
 # boyle
 
+[![ci](https://github.com/beatakouchnir/boyle/actions/workflows/ci.yml/badge.svg)](https://github.com/beatakouchnir/boyle/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/boyle)](https://pypi.org/project/boyle/)
+[![license](https://img.shields.io/pypi/l/boyle)](https://github.com/beatakouchnir/boyle/blob/main/LICENSE)
+
 **Run the model you want at the memory pressure you specify.**
 
 Declare a memory budget; boyle runs mixture-of-experts models inside it on
