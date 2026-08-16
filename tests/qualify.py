@@ -63,6 +63,48 @@ def main() -> int:
     if cls == "unknown":
         flags.append("template probe failed — chat use unverified")
 
+    # 3 — bit-identity vs resident. SEQUENTIAL by design: budgeted and
+    # resident never coexist — on a 32 GB machine, budget + full model
+    # together blow the Metal ceiling (found on the first M1 run; the
+    # deferred kIOGPU OOM surfaces at synchronize). Reloading the budgeted
+    # model afterwards costs seconds.
+    if args.skip_identity or dense:
+        print("[3] bit-identity: skipped" + (" (dense)" if dense else " (flag)"))
+    else:
+        total = anatomy.resident_bytes + anatomy.expert_bytes
+        ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        if total > 0.7 * ram:
+            print(f"[3] bit-identity: NA — resident model ({fmt_size(total)}) "
+                  "exceeds this machine alone; contract carried by smaller "
+                  "family members")
+            checks.append("bit-identity: NA (size)")
+        else:
+            from mlx_lm import load as mload, stream_generate
+
+            prompt = "The capital of France is"
+            ids_b = [r.token for r in stream_generate(
+                m.model, m.tokenizer, prompt, max_tokens=32)]
+            budget_fraction = m.plan.fraction
+            del m
+            gc.collect(); mx.clear_cache()
+            rm, rt = mload(str(model_dir))
+            ids_r = [r.token for r in stream_generate(rm, rt, prompt, max_tokens=32)]
+            del rm, rt
+            gc.collect(); mx.clear_cache()
+            m = load(args.model, budget=args.budget,
+                     max_context=args.max_context, headroom=args.headroom)
+            if ids_b == ids_r:
+                note = ""
+                if not dense and budget_fraction >= 1.0:
+                    note = (" — NOTE: fully resident at this budget; re-run "
+                            "with a tighter --budget to exercise offload misses")
+                print(f"[3] bit-identity: PASS (32 tokens exact){note}")
+                checks.append("bit-identity vs resident"
+                              + (" (resident-fraction)" if note else ""))
+            else:
+                print("[3] bit-identity: FLAG — token divergence")
+                flags.append("bit-identity divergence — investigate before listing")
+
     core = GenerationCore(m, args.model, tools_supported=True)
 
     def turn(msgs, tools=None, n=48):
@@ -72,38 +114,6 @@ def main() -> int:
             if kind == "final":
                 final = payload
         return final
-
-    # 3 — bit-identity vs resident (size-gated)
-    if args.skip_identity or dense:
-        print("[3] bit-identity: skipped" + (" (dense)" if dense else " (flag)"))
-    else:
-        total = anatomy.resident_bytes + anatomy.expert_bytes
-        ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        if total > 0.55 * ram:
-            print(f"[3] bit-identity: NA — model ({fmt_size(total)}) exceeds "
-                  "resident headroom; contract carried by smaller family members")
-            checks.append("bit-identity: NA (size)")
-        else:
-            from mlx_lm import load as mload, stream_generate
-
-            prompt = "The capital of France is"
-            ids_b = [r.token for r in stream_generate(
-                m.model, m.tokenizer, prompt, max_tokens=32)]
-            rm, rt = mload(str(model_dir))
-            ids_r = [r.token for r in stream_generate(rm, rt, prompt, max_tokens=32)]
-            del rm
-            gc.collect(); mx.clear_cache()
-            if ids_b == ids_r:
-                note = ""
-                if not dense and m.plan.fraction >= 1.0:
-                    note = (" — NOTE: fully resident at this budget; re-run "
-                            "with a tighter --budget to exercise offload misses")
-                print(f"[3] bit-identity: PASS (32 tokens exact){note}")
-                checks.append("bit-identity vs resident"
-                              + (" (resident-fraction)" if note else ""))
-            else:
-                print("[3] bit-identity: FLAG — token divergence")
-                flags.append("bit-identity divergence — investigate before listing")
 
     # 4 — tool dialect
     TOOLS = [{"type": "function", "function": {
