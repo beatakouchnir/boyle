@@ -32,7 +32,7 @@ wheels = [
 
 [[package]]
 name = "boyle"
-version = "0.0.1.dev0"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },

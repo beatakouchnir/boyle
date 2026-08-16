@@ -1,6 +1,6 @@
 [project]
 name = "boyle"
-version = "0.0.1.dev0"
+version = "0.1.0"
 description = "Run the model you want at the memory pressure you specify — budgeted MoE inference for Apple silicon"
 readme = "README.md"
 license = "Apache-2.0"

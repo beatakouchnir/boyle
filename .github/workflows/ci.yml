@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # mlx needs Apple silicon; GitHub's macOS arm64 runners provide it.
+    # This runs the no-accelerator test tier — local-model integration
+    # stays behind BOYLE_LOCAL_MODELS=1 on real hardware.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+      - run: uv build
