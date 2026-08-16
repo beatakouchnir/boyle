@@ -13,7 +13,7 @@ boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB   # before down
 boyle serve   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
 ```
 
-![boyle predict: a 224 GB model forecast from headers alone, nothing downloaded](docs/media/predict.gif)
+![boyle predict: a 224 GB model forecast from headers alone, nothing downloaded](https://raw.githubusercontent.com/beatakouchnir/boyle/main/docs/media/predict.gif)
 
 *Named for Robert Boyle: PV = k. What you trade for pressure here is speed,
 and the exchange rate is measured.*
@@ -118,7 +118,7 @@ real timing fields so UIs show true tok/s). It binds port 11434 when free,
 so Ollama-first apps discover it with zero config; if a real Ollama is
 running it politely falls back and prints the URL.
 
-![the official ollama CLI talking to boyle with zero config](docs/media/ollama.gif)
+![the official ollama CLI talking to boyle with zero config](https://raw.githubusercontent.com/beatakouchnir/boyle/main/docs/media/ollama.gif)
 
 | harness | connect via | config |
 |---|---|---|
@@ -170,7 +170,7 @@ at startup (template roundtrip, cache rewindability) and tells you which
 prefix-cache class you're getting; `predict` labels measured curves vs
 priors. The exact tested list, what "tested" means, and the one-command
 qualification procedure for new releases live in
-[COMPATIBILITY.md](COMPATIBILITY.md) — new notable MoE releases get
+[COMPATIBILITY.md](https://github.com/beatakouchnir/boyle/blob/main/COMPATIBILITY.md) — new notable MoE releases get
 qualified promptly, and a release needing code (new tool dialect, new
 cache type) gets a tracking issue.
 
@@ -200,7 +200,7 @@ probe lands within a ±25% band, and why the levers that survived
 measurement are exactly three: direct I/O with parallel installs, a
 colocated expert store, and expert-major prefill. The full research record
 — every lever tried, every dead end, every number — is in
-[docs/report.md](docs/report.md).
+[docs/report.md](https://github.com/beatakouchnir/boyle/blob/main/docs/report.md).
 
 ## Lineage
 
