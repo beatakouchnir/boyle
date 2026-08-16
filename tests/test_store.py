@@ -87,3 +87,28 @@ def test_fetch_expert_roundtrip_via_mx(shard_dir):
 
 def test_missing_dir_is_empty_store(tmp_path):
     assert not CheckpointExpertStore(tmp_path / "nope_does_not_exist")
+
+
+def test_resolve_model_dir_rejects_shardless_cache(tmp_path, monkeypatch):
+    """A config.json-only snapshot (left by headers-only predict) must not
+    satisfy local resolution — the download branch has to run."""
+    import boyle.loader as loader
+
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / "config.json").write_text("{}")
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "model.safetensors").write_bytes(b"x")
+    calls = []
+
+    def fake_snapshot_download(repo, local_files_only=False, **kw):
+        calls.append(local_files_only)
+        return str(partial if local_files_only else full)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    resolved = loader._resolve_model_dir("org/some-model")
+    assert resolved == full
+    assert calls == [True, False]  # local tried, rejected, download ran

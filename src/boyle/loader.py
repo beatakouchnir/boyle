@@ -35,20 +35,28 @@ _MODEL_FILES = ["*.safetensors", "*.json", "tokenizer*", "*.txt", "*.model", "*.
 
 def _resolve_model_dir(model: str | Path) -> Path:
     """Local dir, else HF cache (pattern-restricted: an mlx-style partial
-    cache — model files, no README — must resolve), else download."""
+    cache — model files, no README — must resolve), else download.
+
+    The local hit must actually contain shards: a headers-only `predict`
+    leaves a config.json-only snapshot behind, and accepting it here means
+    the download branch never runs and the loader dies on missing
+    safetensors (found on a fresh machine where predict ran first)."""
     p = Path(model)
     if p.is_dir():
         return p
     from huggingface_hub import snapshot_download
 
     try:
-        return Path(
+        local = Path(
             snapshot_download(
                 str(model), local_files_only=True, allow_patterns=_MODEL_FILES
             )
         )
+        if any(local.glob("*.safetensors")):
+            return local
     except Exception:
-        return Path(snapshot_download(str(model), allow_patterns=_MODEL_FILES))
+        pass
+    return Path(snapshot_download(str(model), allow_patterns=_MODEL_FILES))
 
 
 _PER_EXPERT = re.compile(r"\.layers\.(\d+)\..*\.experts\.(\d+)\.")
