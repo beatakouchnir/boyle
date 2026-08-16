@@ -154,7 +154,7 @@ probe lands within a ±25% band, and why the levers that survived
 measurement are exactly three: direct I/O with parallel installs, a
 colocated expert store, and expert-major prefill. The full research record
 — every lever tried, every dead end, every number — is in
-[docs/report.html](docs/report.html).
+[docs/report.md](docs/report.md).
 
 ## Lineage
 
