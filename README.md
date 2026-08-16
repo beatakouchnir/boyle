@@ -22,7 +22,11 @@ and the exchange rate is measured.*
 > `build`. Landing in v0.2: `trace` (routing capture that adds unmeasured
 > families to `predict`'s curves and orders stores by co-activation).
 
-## What a budget buys you — measured, one machine (M5 Max, 128 GB)
+## What a budget buys you — measured on real hardware
+
+Two machines: an M5 Max (128 GB) and a 2021 M1 Pro MacBook Pro (32 GB) —
+the second bought nothing but a `git clone`, a forecast, and a `bench`
+that landed 1.4% from it.
 
 | model | on disk | budget | decode | how verified |
 |---|---|---|---|---|
