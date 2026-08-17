@@ -209,6 +209,27 @@ def test_logprobs_and_entropy_extension(server):
     assert lp["content"][0]["logprob"] == lp["content"][0]["top_logprobs"][0]["logprob"]
 
 
+def test_sampling_diversity_and_seed_reproducibility(server):
+    """Regression for the frozen-sampler bug: without a seed, two temp-1
+    requests must differ (measured identical before the per-request seeding
+    fix — three szilard selection arms collapsed to one completion); with
+    the same seed, they must match exactly (OpenAI seed semantics)."""
+    def ask(seed=None):
+        body = {"messages": [{"role": "user", "content":
+                              "Write one creative sentence about rivers."}],
+                "max_tokens": 24, "temperature": 1.0}
+        if seed is not None:
+            body["seed"] = seed
+        status, raw = _post(server, "/v1/chat/completions", body)
+        assert status == 200
+        return json.loads(raw)["choices"][0]["message"]["content"]
+
+    unseeded = {ask() for _ in range(3)}
+    assert len(unseeded) > 1, "sampling still deterministic without seed"
+    assert ask(seed=1234) == ask(seed=1234)
+    assert ask(seed=1234) != ask(seed=4321) or len(unseeded) > 2
+
+
 def test_context_overflow_refusal(server):
     huge = "word " * 4000  # ~4k tokens >> 2048 context
     status, body = _post(server, "/v1/chat/completions", {

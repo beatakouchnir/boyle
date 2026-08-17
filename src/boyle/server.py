@@ -251,6 +251,7 @@ class GenerationCore:
         parse_tools: bool,
         chat_ctx: tuple | None = None,
         logprobs_k: int | None = None,
+        seed: int | None = None,
     ):
         """Returns an iterator of ("delta", text) events ending with
         ("final", Reply). Validation is EAGER — deliberately not a generator
@@ -275,7 +276,7 @@ class GenerationCore:
             want = limit - len(tokens)
         out: "queue.Queue" = queue.Queue()
         self._jobs.put(((tokens, want, temperature, top_p, parse_tools,
-                         chat_ctx, logprobs_k), out))
+                         chat_ctx, logprobs_k, seed), out))
 
         def _events():
             while True:
@@ -289,11 +290,24 @@ class GenerationCore:
         return _events()
 
     def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools,
-                            chat_ctx, logprobs_k=None):
+                            chat_ctx, logprobs_k=None, seed=None):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
         suffix, cached = self._prepare_cache(tokens)
+        # Explicit per-request seeding. Measured: without it, sampled
+        # generations were IDENTICAL across requests at any temperature in
+        # the serving path (three szilard selection arms collapsed to one
+        # deterministic completion) even though the same sampler machinery
+        # advances state in a bare process. Seeding per request restores
+        # diversity and adds OpenAI-standard reproducibility: same seed,
+        # same draw.
+        import os as _os
+
+        import mlx.core as _mx
+
+        _mx.random.seed(seed if seed is not None
+                        else int.from_bytes(_os.urandom(4), "little"))
         sampler = make_sampler(temp=temperature, top_p=top_p)
         r = Reply(prompt_tokens=len(tokens), cached_tokens=cached)
         t0 = time.perf_counter()
@@ -604,12 +618,14 @@ def make_handler(core: GenerationCore):
 
         def _gen_params(self, body):
             opts = body.get("options") or {}
+            seed = body.get("seed", opts.get("seed"))
             return (
                 body.get("max_tokens") or body.get("max_completion_tokens")
                 or opts.get("num_predict"),
                 float(body.get("temperature",
                                opts.get("temperature", core.default_temperature))),
                 float(body.get("top_p", opts.get("top_p", 1.0))),
+                int(seed) if seed is not None else None,
             )
 
         # -- OpenAI surface ------------------------------------------------
@@ -618,7 +634,7 @@ def make_handler(core: GenerationCore):
             body = self._body()
             messages = body.get("messages") or []
             tools = body.get("tools") or None
-            max_tokens, temp, top_p = self._gen_params(body)
+            max_tokens, temp, top_p, seed = self._gen_params(body)
             thinking = bool(body.get("enable_thinking") or body.get("think"))
             logprobs_k = (int(body.get("top_logprobs") or 0)
                           if body.get("logprobs") else None)
@@ -626,7 +642,7 @@ def make_handler(core: GenerationCore):
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools),
-                                   logprobs_k=logprobs_k)
+                                   logprobs_k=logprobs_k, seed=seed)
             rid = f"chatcmpl-{int(time.time() * 1000)}"
 
             if body.get("stream"):
@@ -698,9 +714,10 @@ def make_handler(core: GenerationCore):
             prompt = body.get("prompt") or ""
             if isinstance(prompt, list):
                 prompt = prompt[0] if prompt else ""
-            max_tokens, temp, top_p = self._gen_params(body)
+            max_tokens, temp, top_p, seed = self._gen_params(body)
             tokens = list(core.m.tokenizer.encode(prompt))
-            events = core.generate(tokens, max_tokens, temp, top_p, False)
+            events = core.generate(tokens, max_tokens, temp, top_p, False,
+                                   seed=seed)
             rid = f"cmpl-{int(time.time() * 1000)}"
             if body.get("stream"):
                 self._start_stream("text/event-stream")
@@ -755,12 +772,12 @@ def make_handler(core: GenerationCore):
                             "done": True, "done_reason": "load"})
                 return
             tools = body.get("tools") or None
-            max_tokens, temp, top_p = self._gen_params(body)
+            max_tokens, temp, top_p, seed = self._gen_params(body)
             thinking = bool(body.get("think") or body.get("enable_thinking"))
             tokens = core._tokenize_chat(messages, tools, thinking=thinking)
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
-                                   chat_ctx=(messages, tools))
+                                   chat_ctx=(messages, tools), seed=seed)
             name = body.get("model") or core.model_id
             stream = body.get("stream", True)
 
@@ -821,7 +838,7 @@ def make_handler(core: GenerationCore):
                             "created_at": _now_iso(), "response": "",
                             "done": True, "done_reason": "load"})
                 return
-            max_tokens, temp, top_p = self._gen_params(body)
+            max_tokens, temp, top_p, seed = self._gen_params(body)
             if body.get("raw"):
                 tokens = list(core.m.tokenizer.encode(prompt))
             else:
@@ -835,7 +852,8 @@ def make_handler(core: GenerationCore):
                     msgs.append({"role": "system", "content": body["system"]})
                 msgs.append({"role": "user", "content": prompt})
                 tokens = core._tokenize_chat(msgs, None)
-            events = core.generate(tokens, max_tokens, temp, top_p, False)
+            events = core.generate(tokens, max_tokens, temp, top_p, False,
+                                   seed=seed)
             name = body.get("model") or core.model_id
             if body.get("stream", True):
                 self._start_stream("application/x-ndjson")
