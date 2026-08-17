@@ -35,6 +35,32 @@ OLLAMA_PORT = 11434
 FALLBACK_PORT = 11435
 
 
+def _seeded_sampler(temperature: float, top_p: float, seed: int | None):
+    """Categorical/top-p sampler over an explicit key chain."""
+    import os as _os
+
+    import mlx.core as mx
+
+    if seed is None:
+        seed = int.from_bytes(_os.urandom(4), "little")
+    state = {"key": mx.random.key(seed)}
+
+    def sample(logprobs: mx.array) -> mx.array:
+        state["key"], sub = mx.random.split(state["key"])
+        logits = logprobs * (1 / temperature)
+        if 0 < top_p < 1:
+            probs = mx.softmax(logits, axis=-1)
+            order = mx.argsort(-logits, axis=-1)
+            cum = mx.cumsum(mx.take_along_axis(probs, order, axis=-1), axis=-1)
+            keep_sorted = cum - mx.take_along_axis(probs, order, axis=-1) < top_p
+            keep = mx.zeros_like(keep_sorted)
+            keep = mx.put_along_axis(keep, order, keep_sorted, axis=-1)
+            logits = mx.where(keep, logits, mx.array(-float("inf")))
+        return mx.random.categorical(logits, key=sub)
+
+    return sample
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
@@ -295,20 +321,17 @@ class GenerationCore:
         from mlx_lm.sample_utils import make_sampler
 
         suffix, cached = self._prepare_cache(tokens)
-        # Explicit per-request seeding. Measured: without it, sampled
-        # generations were IDENTICAL across requests at any temperature in
-        # the serving path (three szilard selection arms collapsed to one
-        # deterministic completion) even though the same sampler machinery
-        # advances state in a bare process. Seeding per request restores
-        # diversity and adds OpenAI-standard reproducibility: same seed,
-        # same draw.
-        import os as _os
-
-        import mlx.core as _mx
-
-        _mx.random.seed(seed if seed is not None
-                        else int.from_bytes(_os.urandom(4), "little"))
-        sampler = make_sampler(temp=temperature, top_p=top_p)
+        # Explicit-KEY sampling, not global-state sampling. Measured: in the
+        # serving path, sampled generations were identical across requests
+        # at any temperature — global-state seeding on the worker did not
+        # reach the draws (an mlx state/thread/stream interaction; minimal
+        # two-thread repros behave, the full stream_generate path does not).
+        # Explicit keys are immune to threads, streams, and compile capture,
+        # and give OpenAI seed semantics for free: same seed, same draw.
+        if temperature > 0:
+            sampler = _seeded_sampler(temperature, top_p, seed)
+        else:
+            sampler = make_sampler(temp=0.0)
         r = Reply(prompt_tokens=len(tokens), cached_tokens=cached)
         t0 = time.perf_counter()
         t_first = None
