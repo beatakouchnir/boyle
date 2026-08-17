@@ -187,6 +187,28 @@ def test_finish_reason_reports_length_on_cap(server):
     assert json.loads(body)["done_reason"] == "length"
 
 
+def test_logprobs_and_entropy_extension(server):
+    """S3b/S4 dependency: OpenAI logprobs shape plus the token_entropies
+    extension (full-distribution entropy, which top-k cannot reconstruct)."""
+    status, body = _post(server, "/v1/chat/completions", {
+        "messages": [{"role": "user", "content": "Say hi."}],
+        "max_tokens": 12, "temperature": 0.0,
+        "logprobs": True, "top_logprobs": 3})
+    assert status == 200
+    r = json.loads(body)
+    lp = r["choices"][0]["logprobs"]
+    n = r["usage"]["completion_tokens"]
+    assert len(lp["content"]) == n and len(lp["token_entropies"]) == n
+    for entry, ent in zip(lp["content"], lp["token_entropies"]):
+        assert entry["logprob"] <= 0.0
+        assert ent >= 0.0
+        tops = entry["top_logprobs"]
+        assert len(tops) == 3
+        assert tops == sorted(tops, key=lambda e: -e["logprob"])
+    # greedy: chosen token should be the argmax => matches top-1
+    assert lp["content"][0]["logprob"] == lp["content"][0]["top_logprobs"][0]["logprob"]
+
+
 def test_context_overflow_refusal(server):
     huge = "word " * 4000  # ~4k tokens >> 2048 context
     status, body = _post(server, "/v1/chat/completions", {

@@ -63,6 +63,8 @@ class Reply:
     completion_tokens: int = 0
     prompt_eval_s: float = 0.0
     eval_s: float = 0.0
+    logprobs: list | None = None
+    token_entropies: list | None = None
 
 
 class GenerationCore:
@@ -248,6 +250,7 @@ class GenerationCore:
         top_p: float,
         parse_tools: bool,
         chat_ctx: tuple | None = None,
+        logprobs_k: int | None = None,
     ):
         """Returns an iterator of ("delta", text) events ending with
         ("final", Reply). Validation is EAGER — deliberately not a generator
@@ -271,7 +274,8 @@ class GenerationCore:
                 )
             want = limit - len(tokens)
         out: "queue.Queue" = queue.Queue()
-        self._jobs.put(((tokens, want, temperature, top_p, parse_tools, chat_ctx), out))
+        self._jobs.put(((tokens, want, temperature, top_p, parse_tools,
+                         chat_ctx, logprobs_k), out))
 
         def _events():
             while True:
@@ -285,7 +289,7 @@ class GenerationCore:
         return _events()
 
     def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools,
-                            chat_ctx):
+                            chat_ctx, logprobs_k=None):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -297,6 +301,10 @@ class GenerationCore:
         gen_ids = []
         held = ""
         gen_finish = "stop"
+        if logprobs_k is not None:
+            import mlx.core as mx
+
+            r.logprobs, r.token_entropies = [], []
         for out in stream_generate(
             self.m.model,
             self.m.tokenizer,
@@ -310,6 +318,25 @@ class GenerationCore:
             gen_ids.append(out.token)
             if getattr(out, "finish_reason", None):
                 gen_finish = out.finish_reason
+            if logprobs_k is not None and out.logprobs is not None:
+                # per-token signal: chosen logprob, full-distribution entropy,
+                # top-k — the uncertainty machinery szilard/route consume.
+                # Each .item() syncs; the cost exists only when requested.
+                lp = out.logprobs
+                chosen = float(lp[out.token].item())
+                ent = float((-(mx.exp(lp) * lp)).sum().item())
+                entry = {"token": self.m.tokenizer.decode([out.token]),
+                         "logprob": round(chosen, 6)}
+                if logprobs_k > 0:
+                    idx = mx.argpartition(-lp, kth=logprobs_k - 1)[:logprobs_k]
+                    pairs = sorted(
+                        ((int(i), float(lp[int(i)].item())) for i in idx.tolist()),
+                        key=lambda x: -x[1])
+                    entry["top_logprobs"] = [
+                        {"token": self.m.tokenizer.decode([i]),
+                         "logprob": round(v, 6)} for i, v in pairs]
+                r.logprobs.append(entry)
+                r.token_entropies.append(round(ent, 6))
             if parse_tools:
                 emit, held = safe_emit_split(held + out.text, False)
                 if emit:
@@ -593,10 +620,13 @@ def make_handler(core: GenerationCore):
             tools = body.get("tools") or None
             max_tokens, temp, top_p = self._gen_params(body)
             thinking = bool(body.get("enable_thinking") or body.get("think"))
+            logprobs_k = (int(body.get("top_logprobs") or 0)
+                          if body.get("logprobs") else None)
             tokens = core._tokenize_chat(messages, tools, thinking=thinking)
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
-                                   chat_ctx=(messages, tools))
+                                   chat_ctx=(messages, tools),
+                                   logprobs_k=logprobs_k)
             rid = f"chatcmpl-{int(time.time() * 1000)}"
 
             if body.get("stream"):
@@ -639,11 +669,19 @@ def make_handler(core: GenerationCore):
                 msg = {"role": "assistant", "content": final.text or None}
                 if final.tool_calls:
                     msg["tool_calls"] = final.tool_calls
+                choice = {"index": 0, "message": msg,
+                          "finish_reason": final.finish_reason}
+                if final.logprobs is not None:
+                    # OpenAI logprobs shape + token_entropies extension (the
+                    # full-distribution signal top-k cannot reconstruct)
+                    choice["logprobs"] = {
+                        "content": final.logprobs,
+                        "token_entropies": final.token_entropies,
+                    }
                 self._json({
                     "id": rid, "object": "chat.completion",
                     "created": int(time.time()), "model": core.model_id,
-                    "choices": [{"index": 0, "message": msg,
-                                 "finish_reason": final.finish_reason}],
+                    "choices": [choice],
                     "usage": self._usage(final),
                 })
 
