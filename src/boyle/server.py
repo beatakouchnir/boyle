@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import socket
 import threading
 import time
@@ -1013,7 +1014,12 @@ def serve(
     port: int | None = None,
     default_temperature: float = 0.7,
 ) -> tuple[ThreadingHTTPServer, int]:
-    """Bind (with the polite port policy) and return the server, unstarted."""
+    """Bind (with the polite port policy) and return the server, unstarted.
+
+    The GenerationCore is attached as ``httpd.boyle_core`` so callers can
+    drain it on shutdown without threading a second return value through
+    every call site.
+    """
     core = GenerationCore(bmodel, model_id, tools_supported,
                           default_temperature=default_temperature)
     handler = make_handler(core)
@@ -1023,6 +1029,7 @@ def serve(
         try:
             httpd = ThreadingHTTPServer((host, cand), handler)
             httpd.daemon_threads = True
+            httpd.boyle_core = core
             actual = httpd.server_address[1]
             if not port and cand != OLLAMA_PORT:
                 print(f"[boyle] port {OLLAMA_PORT} is taken (a real Ollama?) — "
@@ -1039,6 +1046,7 @@ def run_server(bmodel, model_id, tools_supported, host="127.0.0.1", port=None,
                default_temperature=0.7):
     httpd, actual = serve(bmodel, model_id, tools_supported, host, port,
                           default_temperature=default_temperature)
+    core = httpd.boyle_core
     plan = bmodel.plan
     print(f"[boyle] serving {model_id}")
     print(f"[boyle]   budget: fraction {plan.fraction:.2f}, "
@@ -1053,8 +1061,26 @@ def run_server(bmodel, model_id, tools_supported, host="127.0.0.1", port=None,
         print("[boyle]   note: this exact model is not on the tested list "
               "(see COMPATIBILITY.md) — the probes above are automatic, but "
               "behavior beyond them is unverified")
+    def _drain(signum=None, frame=None):
+        """Stop cleanly instead of dying mid-generation.
+
+        Why this exists: without it the impatient path is SIGTERM (abrupt,
+        looks hung) -> SIGKILL, and SIGKILL on a process holding tens of GB
+        of lazily-mapped weights plus live Metal state can leave it stuck in
+        kernel teardown (state ?E, unkillable, holding the store's file
+        state and its listening socket) — recoverable only by rebooting the
+        machine. Draining first removes the reason to ever escalate.
+        """
+        print("\n[boyle] draining: stopping generation, releasing the model")
+        try:
+            core.cancel_active()
+        finally:
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _drain)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[boyle] shutting down")
-        httpd.shutdown()
+        _drain()
+    httpd.server_close()
+    print("[boyle] stopped")
