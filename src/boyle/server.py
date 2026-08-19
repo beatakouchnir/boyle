@@ -93,6 +93,22 @@ class Reply:
     token_entropies: list | None = None
 
 
+class _EventStream:
+    """Iterator of generation events that also exposes .cancel (an Event)."""
+
+    __slots__ = ("_it", "cancel")
+
+    def __init__(self, it, cancel):
+        self._it = it
+        self.cancel = cancel
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+
 class GenerationCore:
     """Serialized generation over one loaded BoyleModel, with prefix cache.
 
@@ -124,18 +140,49 @@ class GenerationCore:
                                  max_tokens=1):
             pass
         self._jobs: "queue.Queue" = queue.Queue()
+        self._active_cancel: threading.Event | None = None
         self._worker = threading.Thread(target=self._work_loop, daemon=True)
         self._worker.start()
 
     def _work_loop(self):
         while True:
             args, out = self._jobs.get()
+            if args is None:             # liveness ping — proves the WORKER
+                out.put(("pong", None))  # services the queue, not merely that
+                out.put(None)            # an HTTP thread answered
+                continue
+            self._active_cancel = args[-1]   # this job's cancel Event
             try:
                 for event in self._generate_on_worker(*args):
                     out.put(event)
             except Exception as e:  # surfaces on the requesting thread
                 out.put(("error", e))
+            finally:
+                self._active_cancel = None
             out.put(None)
+
+    def ping(self, timeout: float = 2.0) -> bool:
+        """True iff the worker services a trivial job within `timeout`.
+
+        Behind a long generation the ping queues, times out, and returns
+        False — the honest "busy/backed-up" signal that `/v1/models` cannot
+        give, since that route never touches the worker at all.
+        """
+        import queue
+
+        out: queue.Queue = queue.Queue()
+        self._jobs.put((None, out))
+        try:
+            return out.get(timeout=timeout) == ("pong", None)
+        except queue.Empty:
+            return False
+
+    def cancel_active(self) -> None:
+        """Ask the running generation to stop at its next token — used when
+        the requesting client vanished, and on shutdown."""
+        c = getattr(self, "_active_cancel", None)
+        if c is not None:
+            c.set()
 
     # -- prompt assembly ---------------------------------------------------
 
@@ -301,8 +348,9 @@ class GenerationCore:
                 )
             want = limit - len(tokens)
         out: "queue.Queue" = queue.Queue()
+        cancel = threading.Event()
         self._jobs.put(((tokens, want, temperature, top_p, parse_tools,
-                         chat_ctx, logprobs_k, seed), out))
+                         chat_ctx, logprobs_k, seed, cancel), out))
 
         def _events():
             while True:
@@ -313,10 +361,15 @@ class GenerationCore:
                     raise event[1]
                 yield event
 
-        return _events()
+        # The handler cancels through .cancel when its client disconnects:
+        # an abandoned generation otherwise runs to full length on the single
+        # worker, blocking every queued request behind it (including the
+        # client's own retry) while /v1/models keeps answering 200.
+        # (A plain generator cannot carry the attribute — no __dict__.)
+        return _EventStream(_events(), cancel)
 
     def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools,
-                            chat_ctx, logprobs_k=None, seed=None):
+                            chat_ctx, logprobs_k=None, seed=None, cancel=None):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -352,6 +405,9 @@ class GenerationCore:
         ):
             if t_first is None:
                 t_first = time.perf_counter()
+            if cancel is not None and cancel.is_set():
+                gen_finish = "cancelled"
+                break
             gen_ids.append(out.token)
             if getattr(out, "finish_reason", None):
                 gen_finish = out.finish_reason
@@ -538,6 +594,17 @@ def make_handler(core: GenerationCore):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+            elif self.path == "/health":
+                # Deliberately NOT a "did an HTTP thread answer" check:
+                # generation is serialized on one worker, so the question
+                # that matters is whether the WORKER is servicing its queue.
+                # Behind a long generation this reports busy, with 503 so
+                # scripts and load balancers see it without parsing.
+                alive = core.ping()
+                self._json({"status": "ok" if alive else "busy",
+                            "model": core.model_id,
+                            "worker": "idle" if alive else "generating"},
+                           200 if alive else 503)
             elif self.path == "/api/version":
                 self._json({"version": "0.11.0"})
             elif self.path == "/api/tags":
@@ -568,6 +635,7 @@ def make_handler(core: GenerationCore):
 
         def do_POST(self):
             self._streaming = None
+            self._events = None   # set by handlers that start a generation
             self._drain_body()
             try:
                 if self.path == "/v1/chat/completions":
@@ -593,10 +661,21 @@ def make_handler(core: GenerationCore):
             except ContextOverflow as e:
                 self._error_out({"message": str(e), "type": "context_overflow"}, 400)
             except (BrokenPipeError, ConnectionResetError):
+                # The client vanished mid-stream. Stop the generation it
+                # owns — without this the worker runs it to full length and
+                # every queued request (including this client's retry) waits
+                # behind a reply nobody will ever read.
+                self._cancel_events()
                 self.close_connection = True
             except Exception as e:
                 logger.exception("request failed")
+                self._cancel_events()
                 self._error_out({"message": str(e), "type": "server_error"}, 500)
+
+        def _cancel_events(self):
+            ev = getattr(self, "_events", None)
+            if ev is not None and getattr(ev, "cancel", None) is not None:
+                ev.cancel.set()
 
         def _error_out(self, err: dict, status: int):
             """Report an error without ever corrupting the wire protocol.
@@ -666,6 +745,7 @@ def make_handler(core: GenerationCore):
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools),
                                    logprobs_k=logprobs_k, seed=seed)
+            self._events = events   # so a dead client cancels it
             rid = f"chatcmpl-{int(time.time() * 1000)}"
 
             if body.get("stream"):
@@ -741,6 +821,7 @@ def make_handler(core: GenerationCore):
             tokens = list(core.m.tokenizer.encode(prompt))
             events = core.generate(tokens, max_tokens, temp, top_p, False,
                                    seed=seed)
+            self._events = events   # so a dead client cancels it
             rid = f"cmpl-{int(time.time() * 1000)}"
             if body.get("stream"):
                 self._start_stream("text/event-stream")
@@ -801,6 +882,7 @@ def make_handler(core: GenerationCore):
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools), seed=seed)
+            self._events = events   # so a dead client cancels it
             name = body.get("model") or core.model_id
             stream = body.get("stream", True)
 
@@ -877,6 +959,7 @@ def make_handler(core: GenerationCore):
                 tokens = core._tokenize_chat(msgs, None)
             events = core.generate(tokens, max_tokens, temp, top_p, False,
                                    seed=seed)
+            self._events = events   # so a dead client cancels it
             name = body.get("model") or core.model_id
             if body.get("stream", True):
                 self._start_stream("application/x-ndjson")
