@@ -1,28 +1,14 @@
 # The measured map: lossless MoE streaming on Apple silicon
 
-*The research record behind boyle. One machine (Apple M5 Max, 128 GB unified
-memory), August 2026. Every claim below comes from a pre-registered
-experiment with committed raw results; the underlying lab record is being
-prepared for separate publication. boyle ships exactly the levers that
-survived.*
+*The research record behind boyle. One machine (Apple M5 Max, 128 GB unified memory), August 2026. Every claim below comes from a pre-registered experiment with committed raw results; the underlying lab record is being prepared for separate publication. boyle ships exactly the levers that survived.*
 
-**The question:** how fast can mixture-of-experts models larger than memory
-run on a consumer Apple-silicon machine, with outputs bit-identical to a
-resident model?
+**The question:** how fast can mixture-of-experts models larger than memory run on a consumer Apple-silicon machine, with outputs bit-identical to a resident model?
 
-**The answer, measured to closure:** a 397B-class model decodes at ~9 tok/s
-and a 235B model at ~15.5 in a 90 GB budget; under the GPU's wired ceiling,
-streaming is free (resident speed at every bit-rate); above it, one law
-governs everything — and every remaining millisecond sits at a measured
-floor.
+**The answer, measured to closure:** a 397B-class model decodes at ~9 tok/s and a 235B model at ~15.5 in a 90 GB budget; under the GPU's wired ceiling, streaming is free (resident speed at every bit-rate); above it, one law governs everything — and every remaining millisecond sits at a measured floor.
 
 ## 1 · The two regimes: the wired wall divides the world
 
-Metal wires the *entire* buffer on first kernel use — a 3 MB one-expert
-gather faults its full 1.2 GB tensor — and the wired ceiling counts mapped
-buffers, so a 217 GB model demand-mapped through stock kernels dies at
-~112 GB touched. Transparent bigger-than-RAM GPU streaming therefore cannot
-exist on this platform. Two architectures survive, one per regime:
+Metal wires the *entire* buffer on first kernel use — a 3 MB one-expert gather faults its full 1.2 GB tensor — and the wired ceiling counts mapped buffers, so a 217 GB model demand-mapped through stock kernels dies at ~112 GB touched. Transparent bigger-than-RAM GPU streaming therefore cannot exist on this platform. Two architectures survive, one per regime:
 
 | | under the wall (≤ ~110 GB) | over the wall |
 |---|---|---|
@@ -33,23 +19,9 @@ exist on this platform. Two architectures survive, one per regime:
 
 ## 2 · The capacity law (three families, one curve)
 
-Expert routing is **flat** in every family measured — gemma-lineage
-(128 experts), Qwen (512), DeepSeek-lineage GLM (256, sigmoid + shared
-expert): LFU ≪ LRU at every budget; a clairvoyant (Belady-optimal) cache
-beats LRU by only **+0.07 hit rate**; per-domain expert unions cover 42–46%
-of all (layer, expert) pairs. **No hot set exists.**
+Expert routing is **flat** in every family measured — gemma-lineage (128 experts), Qwen (512), DeepSeek-lineage GLM (256, sigmoid + shared expert): LFU ≪ LRU at every budget; a clairvoyant (Belady-optimal) cache beats LRU by only **+0.07 hit rate**; per-domain expert unions cover 42–46% of all (layer, expert) pairs. **No hot set exists.**
 
-Consequently, over-wall speed is a function of two numbers only: the
-budget-to-expert-mass ratio (via one reusable hit curve) and bytes-per-miss.
-A trace-driven simulator built on that curve predicted live hit rates within
-1–3 points on four model/quant configurations — and the same curves, shipped
-inside boyle, predicted 12.5 tok/s for a 235B configuration nobody had
-measured; the live bench read 11.7. The curves are quant-independent:
-distilling the 4-bit and 8-bit routing traces of the same model produces
-identical curves. And the forecast transfers across machines: on a 2021
-M1 Pro (32 GB — different GPU class, different disk, probed locally), the
-same machinery predicted 14.7 tok/s for a 30B model in a 12 GB budget;
-the live bench measured 14.5.
+Consequently, over-wall speed is a function of two numbers only: the budget-to-expert-mass ratio (via one reusable hit curve) and bytes-per-miss. A trace-driven simulator built on that curve predicted live hit rates within 1–3 points on four model/quant configurations — and the same curves, shipped inside boyle, predicted 12.5 tok/s for a 235B configuration nobody had measured; the live bench read 11.7. The curves are quant-independent: distilling the 4-bit and 8-bit routing traces of the same model produces identical curves. And the forecast transfers across machines: on a 2021 M1 Pro (32 GB — different GPU class, different disk, probed locally), the same machinery predicted 14.7 tok/s for a 30B model in a 12 GB budget; the live bench measured 14.5.
 
 Measured single-stream decode (bit-identical outputs, 128 GB machine):
 
@@ -63,9 +35,7 @@ Measured single-stream decode (bit-identical outputs, 128 GB machine):
 
 ## 3 · The quality–speed ladder
 
-Streaming converts the quality–memory trade into quality–speed. Under the
-wall, bits are speed-free; over it, each doubling of bits costs roughly the
-curve twice (halved fraction × doubled miss bytes ≈ 4.9× per doubling):
+Streaming converts the quality–memory trade into quality–speed. Under the wall, bits are speed-free; over it, each doubling of bits costs roughly the curve twice (halved fraction × doubled miss bytes ≈ 4.9× per doubling):
 
 | bit-rate | 26B-class under-wall | 235B-class over-wall |
 |---|---|---|
@@ -73,11 +43,7 @@ curve twice (halved fraction × doubled miss bytes ≈ 4.9× per doubling):
 | 8-bit | 92 tok/s (100.2% of resident) | 3.16 tok/s |
 | bf16 | 56.7 tok/s (101.2% of resident) | — (out of range) |
 
-Quantization, not offload, is the axis that costs accuracy — and
-task-dependently: under the same 4-bit quant, factual QA loses ~1.5 points
-where structured generation loses 18–21. Exact offload changes *when*
-weights are read, never *which* expert runs; an offloaded model's benchmark
-score is the model's score.
+Quantization, not offload, is the axis that costs accuracy — and task-dependently: under the same 4-bit quant, factual QA loses ~1.5 points where structured generation loses 18–21. Exact offload changes *when* weights are read, never *which* expert runs; an offloaded model's benchmark score is the model's score.
 
 ## 4 · The levers: adopted, capped, and dead — all with mechanisms
 
@@ -113,32 +79,16 @@ score is the model's score.
 
 ## 5 · Thinking-mode economics under streaming
 
-Per-token throughput is mode-blind — thinking ran 37% *faster* per token
-(cache warmth) — but costs ~6× the tokens: **3.4–4.4× slower per answer,
-≥4.3× worse time-per-correct** even crediting every censored item (gsm8k,
-n=100/mode). Corollary adopted throughout: short benchmark cells understate
-steady-state speed; long generation runs are the standard design.
+Per-token throughput is mode-blind — thinking ran 37% *faster* per token (cache warmth) — but costs ~6× the tokens: **3.4–4.4× slower per answer, ≥4.3× worse time-per-correct** even crediting every censored item (gsm8k, n=100/mode). Corollary adopted throughout: short benchmark cells understate steady-state speed; long generation runs are the standard design.
 
 ## 6 · Method — what kept this honest
 
-- **Pre-registration:** every experiment declared predictions and decision
-  rules before data. Several predictions were beaten, several confirmed,
-  and five hypotheses were killed by their own written criteria.
-- **Refuse-to-fake asserts:** wrap counts, mechanism counters, sentinel
-  checks — two A/B rounds were voided by silently-inactive mechanisms and
-  caught only by counting invocations.
-- **Bit-identity as the correctness bar** wherever the contract promises
-  it, at three quantization tiers.
-- **Physical verification over accounting:** per-process memory ledgers are
-  blind to mapped pages; the only honest eviction test is a timed re-read.
+- **Pre-registration:** every experiment declared predictions and decision rules before data. Several predictions were beaten, several confirmed, and five hypotheses were killed by their own written criteria.
+- **Refuse-to-fake asserts:** wrap counts, mechanism counters, sentinel checks — two A/B rounds were voided by silently-inactive mechanisms and caught only by counting invocations.
+- **Bit-identity as the correctness bar** wherever the contract promises it, at three quantization tiers.
+- **Physical verification over accounting:** per-process memory ledgers are blind to mapped pages; the only honest eviction test is a timed re-read.
 - **A measured noise floor** (~1.5% step time), so nulls are nulls.
 
 ## 7 · Provenance and upstream work
 
-The runtime descends from the expert-offload patch developed for
-[omlx PR #2595](https://github.com/jundot/omlx/pull/2595) (Apache-2.0 — see
-NOTICE), by way of the measurement program above. Related public artifacts:
-[mlx PR #4249](https://github.com/ml-explore/mlx/pull/4249) (GPU-visible
-mmap weights; closed on scope policy, implementation public) and the
-measurements posted to
-[mlx issue #2878](https://github.com/ml-explore/mlx/issues/2878).
+The runtime descends from the expert-offload patch developed for [omlx PR #2595](https://github.com/jundot/omlx/pull/2595) (Apache-2.0 — see NOTICE), by way of the measurement program above. Related public artifacts: [mlx PR #4249](https://github.com/ml-explore/mlx/pull/4249) (GPU-visible mmap weights; closed on scope policy, implementation public) and the measurements posted to [mlx issue #2878](https://github.com/ml-explore/mlx/issues/2878).
