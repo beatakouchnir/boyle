@@ -329,3 +329,46 @@ def test_streaming_overflow_is_clean_400_and_socket_survives(server):
     assert resp.status == 200
     assert b"data: [DONE]" in resp.read()
     conn.close()
+
+
+def test_safe_template_kwargs_keeps_scalars_drops_mechanics():
+    """chat_template_kwargs passthrough: scalar template variables reach the
+    template; anything that could change rendering mechanics does not."""
+    from boyle.server import _safe_template_kwargs
+
+    assert _safe_template_kwargs(None) == {}
+    assert _safe_template_kwargs("low") == {}
+    out = _safe_template_kwargs({"reasoning_effort": "low", "enable_thinking": False,
+                                 "tokenize": False, "tools": [{"x": 1}],
+                                 "nested": {"a": 1}, "lst": [1, 2], 3: "int-key"})
+    assert out == {"reasoning_effort": "low", "enable_thinking": False}
+
+
+def test_qwen38_reasoning_effort_reaches_template_tokenizer_only():
+    """Qwen3.8's template defines reasoning_effort (xhigh default, medium,
+    low) and enable_thinking; the server merges chat_template_kwargs after
+    enable_thinking so a client can set either. Tokenizer-only, real
+    template, no weights loaded."""
+    from mlx_lm.utils import load_tokenizer
+
+    from boyle.loader import _resolve_model_dir
+    from boyle.server import _safe_template_kwargs
+
+    tok = load_tokenizer(_resolve_model_dir("lmstudio-community/Qwen3.8-27B-MLX-4bit"))
+    msgs = [{"role": "user", "content": "Hi."}]
+
+    def render(thinking, extra):
+        kwargs = {"add_generation_prompt": True, "tokenize": True,
+                  "enable_thinking": thinking}
+        kwargs.update(_safe_template_kwargs(extra))
+        return tok.decode(list(tok.apply_chat_template(msgs, **kwargs)))
+
+    xhigh = render(True, {"reasoning_effort": "xhigh"})
+    low = render(True, {"reasoning_effort": "low"})
+    default = render(True, None)
+    assert low != xhigh
+    assert default == xhigh            # template default is xhigh
+    # chat_template_kwargs can also switch thinking off on its own
+    assert render(True, {"enable_thinking": False}) == render(False, None)
+    # reserved keys are dropped, not honored
+    assert render(True, {"reasoning_effort": "low", "tokenize": False}) == low

@@ -110,6 +110,23 @@ class _EventStream:
         return next(self._it)
 
 
+
+_TEMPLATE_KWARGS_RESERVED = frozenset({"tokenize", "add_generation_prompt",
+                                       "tools", "conversation", "messages",
+                                       "return_tensors", "return_dict",
+                                       "chat_template", "continue_final_message"})
+
+
+def _safe_template_kwargs(raw) -> dict:
+    """Keep only plain scalar template variables from a client-supplied
+    chat_template_kwargs object; everything that could change rendering
+    mechanics (tokenize, tools, ...) is dropped rather than honored."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items()
+            if isinstance(k, str) and k not in _TEMPLATE_KWARGS_RESERVED
+            and (v is None or isinstance(v, (bool, int, float, str)))}
+
 class GenerationCore:
     """Serialized generation over one loaded BoyleModel, with prefix cache.
 
@@ -209,14 +226,23 @@ class GenerationCore:
         return out
 
     def _tokenize_chat(self, messages, tools, generation: bool = True,
-                       thinking: bool = False) -> list[int]:
+                       thinking: bool = False,
+                       template_kwargs: dict | None = None) -> list[int]:
         # thinking defaults OFF: serving targets agents and chat UIs, where
         # interleaved reasoning in message.content breaks clients. Callers
         # opt in per request (OpenAI extra field "enable_thinking"; Ollama
         # "think"). Templates without the variable simply ignore it
         # (Qwen3/3.5 honor it).
+        #
+        # "chat_template_kwargs" (the vLLM / llama.cpp convention) reaches the
+        # template verbatim after sanitizing, so per-model knobs the template
+        # defines — Qwen3.8's reasoning_effort, for one — are reachable
+        # without a server release per knob. It is applied after
+        # enable_thinking, so a client that says {"enable_thinking": false}
+        # inside it gets what it asked for.
         kwargs = {"add_generation_prompt": generation, "tokenize": True,
                   "enable_thinking": thinking}
+        kwargs.update(_safe_template_kwargs(template_kwargs))
         if tools:
             kwargs["tools"] = tools
         ids = self.m.tokenizer.apply_chat_template(self._normalize(messages), **kwargs)
@@ -741,7 +767,9 @@ def make_handler(core: GenerationCore):
             thinking = bool(body.get("enable_thinking") or body.get("think"))
             logprobs_k = (int(body.get("top_logprobs") or 0)
                           if body.get("logprobs") else None)
-            tokens = core._tokenize_chat(messages, tools, thinking=thinking)
+            tokens = core._tokenize_chat(
+                messages, tools, thinking=thinking,
+                template_kwargs=body.get("chat_template_kwargs"))
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools),
@@ -879,7 +907,9 @@ def make_handler(core: GenerationCore):
             tools = body.get("tools") or None
             max_tokens, temp, top_p, seed = self._gen_params(body)
             thinking = bool(body.get("think") or body.get("enable_thinking"))
-            tokens = core._tokenize_chat(messages, tools, thinking=thinking)
+            tokens = core._tokenize_chat(
+                messages, tools, thinking=thinking,
+                template_kwargs=body.get("chat_template_kwargs"))
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools), seed=seed)
