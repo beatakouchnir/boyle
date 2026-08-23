@@ -112,9 +112,13 @@ def _bench(args) -> int:
     if not fc.fits:
         print(fc.render())
         return 1
-    print(f"[bench] predicted {fc.tok_s:.1f} tok/s "
-          f"(band {fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}); loading...",
-          file=sys.stderr)
+    if fc.dense:
+        print("[bench] dense model: no decode forecast band; measuring...",
+              file=sys.stderr)
+    else:
+        print(f"[bench] predicted {fc.tok_s:.1f} tok/s "
+              f"(band {fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}); loading...",
+              file=sys.stderr)
     m = load(
         args.model, budget=args.budget,
         max_context=args.max_context, headroom=args.headroom,
@@ -129,12 +133,14 @@ def _bench(args) -> int:
     steady = times[len(times) // 3 :]
     tok_s = (len(steady) - 1) / (steady[-1] - steady[0])
     s = m.stats()
-    within = fc.tok_s_lo <= tok_s <= fc.tok_s_hi
+    within = True if fc.dense else (fc.tok_s_lo <= tok_s <= fc.tok_s_hi)
+    verdict = ("no forecast band for a dense model (resident)" if fc.dense else
+               f"{'WITHIN' if within else 'OUTSIDE'} the predicted band "
+               f"{fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}")
     print(
         f"[bench] measured {tok_s:.1f} tok/s steady "
         f"(TTFT {ttft:.1f}s, hit rate {100 * (s['hit_rate'] or 0):.1f}%) — "
-        f"{'WITHIN' if within else 'OUTSIDE'} the predicted band "
-        f"{fc.tok_s_lo:.1f}–{fc.tok_s_hi:.1f}"
+        f"{verdict}"
     )
     return 0 if within else 3
 

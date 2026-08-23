@@ -99,3 +99,24 @@ def test_calibrate_falls_back_without_cold_files(monkeypatch, tmp_path):
     cal = calibrate(force=True)
     assert cal["bandwidth_bytes_s"] == _FALLBACK_BW
     assert "note" in cal
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("BOYLE_LOCAL_MODELS"),
+    reason="needs a local dense checkpoint (BOYLE_LOCAL_MODELS=1)",
+)
+def test_predict_dense_model_reports_resident_only_forecast():
+    """Regression: predict/bench crashed with IndexError on every dense
+    checkpoint (anatomy.layers is empty, so anatomy.layers[0][0] had nothing
+    to index). A dense model gets a resident-only forecast, no decode band,
+    and bench skips the band comparison."""
+    from boyle.predict import predict
+
+    fc = predict("mlx-community/Qwen3-4B-Instruct-2507-4bit", "30GB", max_context=8192)
+    assert fc.fits and fc.dense
+    assert fc.plan.fraction == 1.0 and fc.plan.slots_bytes == 0
+    assert fc.tok_s == 0.0 and fc.hit_rate == 1.0
+    text = fc.render()
+    assert "dense model: runs resident" in text
+    assert "band" not in text.split("note:")[0]
+    assert fc.store_bytes == fc.plan.resident_bytes

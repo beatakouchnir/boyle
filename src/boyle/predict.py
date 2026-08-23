@@ -267,6 +267,7 @@ class Forecast:
     accuracy_rows: list = field(default_factory=list)
     accuracy_notes: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    dense: bool = False
 
     def render(self) -> str:
         if not self.fits:
@@ -277,13 +278,20 @@ class Forecast:
             f"  budget {fmt_size(p.budget_bytes)}: FITS "
             f"(fraction {p.fraction:.2f}, slots {fmt_size(p.slots_bytes)}, "
             f"resident {fmt_size(p.resident_bytes)})",
-            f"  decode ~{self.tok_s:.1f} tok/s "
-            f"(band {self.tok_s_lo:.1f}–{self.tok_s_hi:.1f}) — "
-            f"expert hit rate ~{100 * self.hit_rate:.0f}% "
-            f"[{self.curve_source}]",
-            f"  first request after load: up to ~{self.ttft_cold_s:.0f} s "
-            f"(cold expert fill; load itself is seconds); warm turns are "
-            f"prefix-cached",
+            *([
+                "  dense model: runs resident (no expert offload); decode "
+                "forecast not applicable — `boyle bench` measures it",
+                "  first request after load: load itself is seconds; warm "
+                "turns are prefix-cached",
+            ] if self.dense else [
+                f"  decode ~{self.tok_s:.1f} tok/s "
+                f"(band {self.tok_s_lo:.1f}–{self.tok_s_hi:.1f}) — "
+                f"expert hit rate ~{100 * self.hit_rate:.0f}% "
+                f"[{self.curve_source}]",
+                f"  first request after load: up to ~{self.ttft_cold_s:.0f} s "
+                f"(cold expert fill; load itself is seconds); warm turns are "
+                f"prefix-cached",
+            ]),
             f"  context: {p.max_context} guaranteed at this budget "
             f"(headroom to ~{self.max_context_headroom})",
             f"  disk: {fmt_size(self.store_bytes)} checkpoint",
@@ -337,6 +345,27 @@ def predict(
         notes.append(cal["note"])
 
     n_layers = len(anatomy.layers)
+    if n_layers == 0:
+        # Dense checkpoint: nothing to offload, so there is no routing curve
+        # to forecast decode from. Report the resident-only fit and leave
+        # throughput to `boyle bench` (the forecast verbs used to index
+        # anatomy.layers[0][0] here and crash on every dense model).
+        rows = [
+            r for r in accuracy["rows"]
+            if r.get("model") == model
+            or (fam and r.get("family") == fam
+                and r.get("quant_bits") == _quant_bits(config, anatomy))
+        ]
+        notes.append("dense model: resident-only forecast; no decode band")
+        return Forecast(
+            model=model, fits=True, plan=p, family=fam, dense=True,
+            curve_source="dense (runs resident)", hit_rate=1.0,
+            max_context_headroom=max_context_for(
+                anatomy, budget, p.fraction, headroom=headroom),
+            store_bytes=anatomy.resident_bytes,
+            bandwidth_bytes_s=bw, accuracy_rows=rows,
+            accuracy_notes=accuracy["notes"], notes=notes,
+        )
     total_expert_slots = sum(n for n, _ in anatomy.layers)
     avg_expert_bytes = anatomy.expert_bytes / total_expert_slots if total_expert_slots else 0
 
