@@ -14,6 +14,7 @@ The machine-readable version of this table ships in the package (`boyle/data/tes
 | mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit | 2026-08-15 | real OpenCode session (write/bash/edit); warm agent turn 3.3 s; overflow refusal; **cross-machine on a 2021 M1 Pro 32 GB**: qualify clean (identity exact, tools parsed, prefix 94%), bench 14.5 vs 14.7 forecast; side-by-side with a real Ollama (port fallback + OLLAMA_HOST), incl. the year-old CLI's /api/generate path |
 | mlx-community/Qwen3-235B-A22B-Instruct-2507-4bit | 2026-08-14 | `bench` vs `predict` at an out-of-sample fraction (11.7 vs 12.5, in band) |
 | mlx-community/Qwen3.5-397B-A17B-4bit | 2026-08-14 | serve agent tool exchange (XML dialect); decode in forecast band (7.2); load 1.5 s; hybrid-cache class |
+| lmstudio-community/Qwen3.8-27B-MLX-4bit | 2026-08-22 | dense (16.05 GB resident, 0 MoE layers); template roundtrip faithful, prefix cache: full; tool calls parsed; prefix warm 93% |
 
 ## Untested models: what happens
 

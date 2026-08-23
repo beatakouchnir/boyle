@@ -54,6 +54,16 @@
         "hybrid-cache class: per-user-turn re-prefill",
         "load 1.5s"
       ]
+    },
+    {
+      "model": "lmstudio-community/Qwen3.8-27B-MLX-4bit",
+      "verified": "2026-08-22",
+      "checks": [
+        "anatomy/plan",
+        "prefix cache: full",
+        "tool calls parsed",
+        "prefix warm 93%"
+      ]
     }
   ]
 }
