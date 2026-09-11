@@ -159,6 +159,10 @@ class CheckpointExpertStore:
     def has(self, name: str) -> bool:
         return name in self._specs
 
+    def names(self):
+        """Every tensor name in the checkpoint (all shards)."""
+        return self._specs.keys()
+
     def spec(self, name: str) -> tuple[tuple[int, ...], str]:
         _, dtype, shape, _ = self._specs[name]
         return shape, dtype
@@ -735,6 +739,27 @@ def _iter_switch_glus(model):
     yield from walk(None, None, model, "")
 
 
+def _prefixed_checkpoint_path(
+    store: CheckpointExpertStore,
+    path: str,
+    suffixes=(".gate_proj.weight", ".experts.0.gate_proj.weight"),
+) -> str | None:
+    """Checkpoint-side name of a module ``path`` stored under an extra prefix.
+
+    Probes ``<prefix>.<path><suffix>`` for each suffix (by default the stacked
+    ``gate_proj.weight`` tensor and its per-expert variant). Exactly one
+    candidate must match — an ambiguous suffix (two prefixes) is left
+    unresolved so the module runs resident with a log line, never against
+    the wrong tensors.
+    """
+    for suffix in suffixes:
+        probe = f".{path}{suffix}"
+        hits = [n for n in store.names() if n.endswith(probe)]
+        if len(hits) == 1:
+            return hits[0][: -len(suffix)]
+    return None
+
+
 def _resolve_store_view(
     glu: SwitchGLU, store: CheckpointExpertStore, path: str
 ) -> tuple[_GLUStoreView | None, str | None]:
@@ -765,6 +790,17 @@ def _resolve_store_view(
         )
 
     stacked = _GLUStoreView(store, path)
+    if not stacked.has("gate_proj", "weight"):
+        # A checkpoint may nest the text model under a prefix that the
+        # model's sanitize() strips at load (mlx-vlm conversions keep
+        # ``language_model.model.layers...`` while some mlx-lm ports build a
+        # ``model.layers...`` tree). Tensor names are what the store reads
+        # by, so resolve the module path to its checkpoint-side name when
+        # exactly one prefix produces a match.
+        prefixed = _prefixed_checkpoint_path(store, path)
+        if prefixed is not None:
+            path = prefixed
+            stacked = _GLUStoreView(store, path)
     parent = path.rsplit(".", 1)[0] if "." in path else ""
     view = (
         stacked
