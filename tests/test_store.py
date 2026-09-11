@@ -174,3 +174,121 @@ def test_store_view_leaves_ambiguous_prefix_unresolved(tmp_path):
     view, reason = _resolve_store_view(glu, store, "model.layers.0.mlp.switch_mlp")
     assert view is None and "no tensor" in reason
 
+
+# --- sharded lookup tables (n-gram PLE) ----------------------------------
+
+
+class _ShardedTable:
+    """Stand-in for mlx-lm's ``qwen4_exp._ShardedEmbedding``: N quantized
+    embedding tables addressed by a global row id. Same attributes, same
+    forward, so the duck-typed wrapper sees exactly what it sees in mlx-lm."""
+
+    def __new__(cls, n_shards, rows, dim):
+        import mlx.core as mx
+        from mlx import nn
+
+        class Table(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.n_shards, self.rows, self.dim = n_shards, rows, dim
+                for i in range(n_shards):
+                    emb = nn.Embedding(rows, dim)
+                    setattr(self, f"shard_{i}", nn.QuantizedEmbedding.from_embedding(
+                        emb, group_size=32, bits=4))
+
+            def __call__(self, gid):
+                flat = gid.reshape(-1)
+                shard_of = np.array(flat) // self.rows
+                row_of = flat % self.rows
+                out = mx.zeros((flat.size, self.dim), dtype=mx.float32)
+                for s in np.unique(shard_of).tolist():
+                    sel = mx.array(np.nonzero(shard_of == s)[0])
+                    emb = getattr(self, f"shard_{s}")(mx.take(row_of, sel))
+                    out = mx.put_along_axis(out, sel[:, None], emb.astype(mx.float32), axis=0)
+                return out.reshape(*gid.shape, self.dim)
+
+        return Table()
+
+
+def _table_tensors(table, prefix, shard_fmt="shards.{}"):
+    out = {}
+    for i in range(table.n_shards):
+        shard = getattr(table, f"shard_{i}")
+        for field in ("weight", "scales", "biases"):
+            out[f"{prefix}.{shard_fmt.format(i)}.{field}"] = np.array(shard[field])
+    return out
+
+
+def test_read_rows_gathers_by_index(shard_dir):
+    path, tensors = shard_dir
+    store = CheckpointExpertStore(path, direct=True)
+    name = "layers.0.mlp.gate_proj.scales"  # 2-D (4, 8)
+    rows = np.array([3, 0, 3, 1])
+    raw, tag = store.read_rows(name, rows)
+    assert tag == "U32"
+    np.testing.assert_array_equal(raw, tensors[name][rows])
+
+
+def test_lookup_offload_is_bit_identical(tmp_path):
+    """Rows read from disk and dequantized must equal the resident table
+    exactly — duplicates, cross-shard batches and all — and the checkpoint's
+    mlx-vlm naming (``shards.N`` under a prefix) must resolve."""
+    import mlx.core as mx
+    from mlx import nn
+
+    from boyle._runtime import OffloadShardedEmbedding, apply_lookup_offload
+
+    mx.random.seed(3)
+    table = _ShardedTable(n_shards=3, rows=20, dim=64)
+    prefix = "language_model.model.layers.0.ple.ple_embedding.ngram_embedding"
+    write_shard(tmp_path / "model.safetensors", _table_tensors(table, prefix))
+
+    # boyle wraps by walking the tree; the module path lacks the prefix.
+    holder = nn.Module()
+    holder.model = nn.Module()
+    holder.model.layers = [nn.Module()]
+    holder.model.layers[0].ple = nn.Module()
+    holder.model.layers[0].ple.ple_embedding = nn.Module()
+    holder.model.layers[0].ple.ple_embedding.ngram_embedding = table
+    assert apply_lookup_offload(holder, tmp_path) == 1
+    wrapped = holder.model.layers[0].ple.ple_embedding.ngram_embedding
+    assert isinstance(wrapped, OffloadShardedEmbedding)
+
+    gid = mx.array([[[5, 5, 41, 0], [59, 20, 41, 19]]])  # dupes, all 3 shards
+    got = wrapped(gid)
+    want = table(gid)
+    assert got.shape == want.shape == (1, 2, 4, 64)
+    np.testing.assert_array_equal(np.array(got), np.array(want))
+    assert wrapped.lookups == 8 and wrapped.rows_read == 6
+
+
+def test_lookup_offload_refuses_partial_coverage(tmp_path):
+    import mlx.core as mx
+    from mlx import nn
+
+    from boyle._runtime import apply_lookup_offload
+
+    mx.random.seed(4)
+    table = _ShardedTable(n_shards=2, rows=8, dim=32)
+    tensors = _table_tensors(table, "ngram_embedding")
+    del tensors["ngram_embedding.shards.1.scales"]
+    write_shard(tmp_path / "model.safetensors", tensors)
+    holder = nn.Module()
+    holder.ngram_embedding = table
+    assert apply_lookup_offload(holder, tmp_path) == 0
+    assert holder.ngram_embedding is table
+
+
+def test_anatomy_counts_lookup_tables_separately():
+    from boyle.loader import classify_specs
+
+    specs = {
+        "language_model.model.embed_tokens.weight": ((10, 4), "U32"),
+        "language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight": ((4, 8, 2), "U32"),
+        "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.weight": ((100, 4), "U32"),
+        "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shard_1.weight": ((100, 4), "U32"),
+    }
+    a = classify_specs(specs, None)
+    assert a.lookup_bytes == 2 * 100 * 4 * 4
+    assert a.expert_bytes == 4 * 8 * 2 * 4
+    assert a.resident_bytes == 10 * 4 * 4
