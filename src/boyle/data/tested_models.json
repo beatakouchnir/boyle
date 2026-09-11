@@ -64,6 +64,18 @@
         "tool calls parsed",
         "prefix warm 93%"
       ]
+    },
+    {
+      "model": "mlx-community/Qwen3.8-Flash-Next-4bit",
+      "verified": "2026-09-10",
+      "checks": [
+        "anatomy/plan (48 MoE layers; 32 GB PLE table streamed by row)",
+        "prefix cache: full",
+        "tool calls parsed",
+        "prefix warm 93%",
+        "bench 17.1 tok/s at 88 GB (all experts resident, no forecast band)",
+        "mlx-vlm agreement on the same weights: median KL 0.005 nats, argmax 94-96% (teacher-forced, 600 + 3000 tokens)"
+      ]
     }
   ]
 }
