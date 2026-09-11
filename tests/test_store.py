@@ -112,3 +112,65 @@ def test_resolve_model_dir_rejects_shardless_cache(tmp_path, monkeypatch):
     resolved = loader._resolve_model_dir("org/some-model")
     assert resolved == full
     assert calls == [True, False]  # local tried, rejected, download ran
+
+
+# --- prefixed checkpoint names ------------------------------------------
+
+
+def _quantized_glu():
+    """A stock SwitchGLU quantized the way a 4-bit checkpoint loads it."""
+    from mlx import nn
+    from mlx_lm.models.switch_layers import SwitchGLU
+
+    glu = SwitchGLU(32, 32, 4)
+    nn.quantize(glu, group_size=32, bits=4)
+    return glu
+
+
+def _glu_tensors(glu, prefix):
+    """{checkpoint name: numpy array} for one GLU under ``prefix``."""
+    out = {}
+    for proj in ("gate_proj", "up_proj", "down_proj"):
+        lin = getattr(glu, proj)
+        for field in ("weight", "scales", "biases"):
+            out[f"{prefix}.{proj}.{field}"] = np.array(lin[field])
+    return out
+
+
+def test_store_view_resolves_prefixed_checkpoint_name(tmp_path):
+    """mlx-vlm conversions key the text model as ``language_model.model.``
+    while some mlx-lm ports build a ``model.`` tree: the store reads by
+    checkpoint name, so the module path must resolve to the prefixed one."""
+    from boyle._runtime import _resolve_store_view
+
+    glu = _quantized_glu()
+    write_shard(
+        tmp_path / "model.safetensors",
+        _glu_tensors(glu, "language_model.model.layers.0.mlp.switch_mlp"),
+    )
+    store = CheckpointExpertStore(tmp_path, direct=False)
+    view, reason = _resolve_store_view(glu, store, "model.layers.0.mlp.switch_mlp")
+    assert reason is None
+    assert view._prefix == "language_model.model.layers.0.mlp.switch_mlp"
+    np.testing.assert_array_equal(
+        np.array(view.fetch("gate_proj", "weight", 2)),
+        np.array(glu.gate_proj["weight"][2]),
+    )
+
+
+def test_store_view_leaves_ambiguous_prefix_unresolved(tmp_path):
+    """Two prefixes matching the same suffix: refuse rather than guess."""
+    from boyle._runtime import _resolve_store_view
+
+    glu = _quantized_glu()
+    write_shard(
+        tmp_path / "model.safetensors",
+        {
+            **_glu_tensors(glu, "language_model.model.layers.0.mlp.switch_mlp"),
+            **_glu_tensors(glu, "mtp.model.layers.0.mlp.switch_mlp"),
+        },
+    )
+    store = CheckpointExpertStore(tmp_path, direct=False)
+    view, reason = _resolve_store_view(glu, store, "model.layers.0.mlp.switch_mlp")
+    assert view is None and "no tensor" in reason
+
