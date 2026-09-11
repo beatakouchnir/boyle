@@ -269,6 +269,7 @@ class Forecast:
     notes: list = field(default_factory=list)
     dense: bool = False
     lookup_bytes: int = 0
+    fully_resident: bool = False  # every expert has a slot: no expert I/O
 
     def render(self) -> str:
         if not self.fits:
@@ -285,11 +286,17 @@ class Forecast:
                 "  first request after load: load itself is seconds; warm "
                 "turns are prefix-cached",
             ] if self.dense else [
-                f"  decode ~{self.tok_s:.1f} tok/s "
+                "  decode: all experts resident (compute-bound, no expert I/O) — "
+                "no measured anchor for this family; `boyle bench` measures it"
+                if self.fully_resident and not self.tok_s
+                else f"  decode ~{self.tok_s:.1f} tok/s "
                 f"(band {self.tok_s_lo:.1f}–{self.tok_s_hi:.1f}) — "
                 f"expert hit rate ~{100 * self.hit_rate:.0f}% "
                 f"[{self.curve_source}]",
-                f"  first request after load: up to ~{self.ttft_cold_s:.0f} s "
+                "  first request after load: no expert fill (all resident); load "
+                "itself is seconds; warm turns are prefix-cached"
+                if self.fully_resident
+                else f"  first request after load: up to ~{self.ttft_cold_s:.0f} s "
                 f"(cold expert fill; load itself is seconds); warm turns are "
                 f"prefix-cached",
             ]),
@@ -409,6 +416,11 @@ def predict(
             "`boyle trace` then `bench` tightens this"
         )
 
+    # A plan with a slot for every expert never misses: the routing curve
+    # (measured below 1.0) must not be extrapolated into phantom I/O.
+    fully_resident = p.fraction >= 1.0
+    if fully_resident:
+        hit, mpt = 1.0, 0.0
     io_ms = 1000 * mpt * avg_expert_bytes / bw
 
     fam_anchors = [
@@ -431,6 +443,9 @@ def predict(
             notes.append("family anchors disagree on the compute floor; band widened")
         step_ms = base_ms + io_ms
         tok_s = 1000 / step_ms
+    elif fully_resident:
+        tok_s = 0.0  # no I/O term and no compute anchor: nothing to forecast
+        band = 1.0
     else:
         tok_s = 1000 / io_ms if io_ms > 0 else 0.0
         band = 2.0
@@ -468,6 +483,7 @@ def predict(
         max_context_headroom=max_context_for(anatomy, budget, p.fraction, headroom=headroom),
         store_bytes=anatomy.resident_bytes + anatomy.expert_bytes + anatomy.lookup_bytes,
         lookup_bytes=anatomy.lookup_bytes,
+        fully_resident=fully_resident,
         bandwidth_bytes_s=bw,
         accuracy_rows=rows,
         accuracy_notes=accuracy["notes"],
