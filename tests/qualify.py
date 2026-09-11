@@ -43,6 +43,8 @@ def main() -> int:
     print(f"[1] anatomy: {len(anatomy.layers)} MoE layers, "
           f"experts {fmt_size(anatomy.expert_bytes)}, "
           f"resident {fmt_size(anatomy.resident_bytes)}"
+          + (f", lookup tables {fmt_size(anatomy.lookup_bytes)} (streamed)"
+             if anatomy.lookup_bytes else "")
           + (" — DENSE model (runs resident, budget still enforced)" if dense else ""))
     try:
         m = load(args.model, budget=args.budget, max_context=args.max_context,

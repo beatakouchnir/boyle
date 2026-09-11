@@ -64,6 +64,7 @@ class ModelAnatomy:
     resident_bytes: int  # non-expert weights: always wired
     layers: tuple[tuple[int, int], ...]  # per MoE layer: (n_experts, table_bytes)
     kv_bytes_per_token: int = 0
+    lookup_bytes: int = 0  # sharded lookup tables: streamed by row, never wired
 
     @property
     def expert_bytes(self) -> int:

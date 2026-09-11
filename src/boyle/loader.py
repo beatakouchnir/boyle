@@ -24,9 +24,10 @@ import numpy as np
 from boyle._runtime import (
     CheckpointExpertStore,
     apply_expert_offload,
+    apply_lookup_offload,
     offload_stats,
 )
-from boyle.budget import BudgetPlan, ModelAnatomy, plan as resolve_budget
+from boyle.budget import BudgetPlan, ModelAnatomy, fmt_size, plan as resolve_budget
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ _PER_EXPERT = re.compile(r"\.layers\.(\d+)\..*\.experts\.(\d+)\.")
 _STACKED = re.compile(
     r"\.layers\.(\d+)\..*\.(?:gate_proj|up_proj|down_proj)\.(?:weight|scales|biases)$"
 )
+# Sharded n-gram lookup tables (Qwen4-exp PLE): rows are read on demand, a
+# handful per token, so the table is neither resident nor an expert slab.
+_LOOKUP = re.compile(r"\.ngram_embedding\.shards?[._]\d+\.(?:weight|scales|biases)$")
 
 
 def classify_specs(
@@ -81,11 +85,15 @@ def classify_specs(
     layer_bytes: dict[int, int] = {}
     layer_experts: dict[int, set] = {}
     expert_total = 0
+    lookup_total = 0
     total = 0
     itemsize = {"BF16": 2, "F16": 2, "F32": 4, "U32": 4, "I32": 4, "U8": 1}
     for name, (shape, dtype) in specs.items():
         nbytes = int(np.prod(shape)) * itemsize.get(dtype, 2) if shape else 0
         total += nbytes
+        if len(shape) == 2 and _LOOKUP.search(name):
+            lookup_total += nbytes
+            continue
         m = _PER_EXPERT.search(name)
         if m:
             layer = int(m.group(1))
@@ -123,9 +131,10 @@ def classify_specs(
             logger.warning("boyle: config.json missing KV keys — planning with 0")
 
     return ModelAnatomy(
-        resident_bytes=total - expert_total,
+        resident_bytes=total - expert_total - lookup_total,
         layers=tuple(layers),
         kv_bytes_per_token=kv_per_token,
+        lookup_bytes=lookup_total,
     )
 
 
@@ -196,6 +205,12 @@ def load(
             "is off for this model; please report it",
             len(anatomy.layers),
             wrapped,
+        )
+    if anatomy.lookup_bytes and not apply_lookup_offload(mdl, model_dir):
+        logger.warning(
+            "boyle: planned to stream %s of lookup tables but wrapped none — "
+            "they run resident and the budget accounting is off; please report it",
+            fmt_size(anatomy.lookup_bytes),
         )
     mx.eval(mdl.parameters())
     tokenizer = load_tokenizer(model_dir)

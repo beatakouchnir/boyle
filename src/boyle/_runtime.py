@@ -136,6 +136,7 @@ class CheckpointExpertStore:
         self._direct = direct
         self._specs: dict[str, tuple[Path, str, tuple[int, ...], int]] = {}
         self._mm: dict[Path, np.memmap] = {}
+        self._mm2d: dict[str, np.memmap] = {}
         self._fd: dict[Path, int] = {}
         model_path = Path(model_path)
         for shard in sorted(model_path.glob("*.safetensors")):
@@ -190,6 +191,25 @@ class CheckpointExpertStore:
                 mm = self._mm[shard] = np.memmap(shard, dtype=np.uint8, mode="r")
             raw = np.array(mm[start : start + n_bytes])  # one copy
         return raw.view(np_dtype).reshape(out_shape), dtype
+
+    def read_rows(self, name: str, rows: np.ndarray) -> tuple[np.ndarray, str]:
+        """Rows of a 2-D tensor by index, through the page cache.
+
+        Lookup tables are the opposite access pattern from expert slabs:
+        ~100-byte rows, a handful per token, and the same rows again and
+        again (n-grams repeat). The page cache *is* the row cache, so this
+        path is memmap even when the store is otherwise F_NOCACHE.
+        """
+        shard, dtype, shape, offset = self._specs[name]
+        if len(shape) != 2:
+            raise ValueError(f"{name!r} is not a 2-D table: shape {shape}")
+        np_dtype, _ = _DTYPES[dtype]
+        mm = self._mm2d.get(name)
+        if mm is None:
+            mm = self._mm2d[name] = np.memmap(
+                shard, dtype=np_dtype, mode="r", offset=offset, shape=shape
+            )
+        return np.ascontiguousarray(mm[rows]), dtype
 
     @staticmethod
     def to_mx(raw: np.ndarray, dtype_tag: str) -> mx.array:
@@ -944,3 +964,172 @@ __all__ = [
     "get_timers",
     "reset_timers",
 ]
+
+
+# --- lookup tables (n-gram PLE) --------------------------------------------
+
+
+_SHARD_NAMES = ("shard_{}", "shards.{}")  # mlx-lm / HF naming, mlx-vlm naming
+
+
+def _is_sharded_lookup(obj) -> bool:
+    """Duck-type mlx-lm's ``qwen4_exp._ShardedEmbedding`` (the n-gram PLE
+    table): ``n_shards``/``rows``/``dim`` plus ``shard_<i>`` children, each a
+    ``QuantizedEmbedding`` once the checkpoint's quantization is applied."""
+    return (
+        isinstance(obj, nn.Module)
+        and all(hasattr(obj, a) for a in ("n_shards", "rows", "dim"))
+        and isinstance(getattr(obj, "shard_0", None), nn.QuantizedEmbedding)
+    )
+
+
+def _iter_sharded_lookups(model):
+    seen = set()
+
+    def walk(parent, key, obj, path):
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
+        if _is_sharded_lookup(obj):
+            yield (parent, key, obj, path)
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from walk(obj, k, v, f"{path}.{k}" if path else k)
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj):
+                yield from walk(obj, i, v, f"{path}.{i}")
+
+    yield from walk(None, None, model, "")
+
+
+class _LookupStoreView:
+    """Row reads for one sharded table, in the checkpoint's own naming."""
+
+    def __init__(self, store: CheckpointExpertStore, prefix: str, shard_fmt: str):
+        self._store = store
+        self._prefix = prefix
+        self._fmt = shard_fmt
+
+    def name(self, shard: int, field: str) -> str:
+        return f"{self._prefix}.{self._fmt.format(shard)}.{field}"
+
+    def rows(self, shard: int, rows: np.ndarray, fields) -> list[mx.array | None]:
+        out = []
+        for field in ("weight", "scales", "biases"):
+            if field not in fields:
+                out.append(None)
+                continue
+            raw, tag = self._store.read_rows(self.name(shard, field), rows)
+            out.append(self._store.to_mx(raw, tag))
+        return out
+
+
+def _resolve_lookup_view(table, store: CheckpointExpertStore, path: str):
+    """Validate that the checkpoint covers every shard of ``table`` (names,
+    shapes, dtypes) and return the view, or ``(None, reason)``."""
+    fields = ["weight", "scales"] + (
+        ["biases"] if table.shard_0.get("biases") is not None else []
+    )
+    for fmt in _SHARD_NAMES:
+        probe_suffix = "." + fmt.format(0) + ".weight"
+        prefix = path if store.has(path + probe_suffix) else None
+        if prefix is None:
+            prefix = _prefixed_checkpoint_path(store, path, (probe_suffix,))
+        if prefix is None:
+            continue
+        view = _LookupStoreView(store, prefix, fmt)
+        for i in range(table.n_shards):
+            shard = getattr(table, f"shard_{i}")
+            for field in fields:
+                name = view.name(i, field)
+                if not store.has(name):
+                    return None, f"checkpoint has no tensor {name!r}"
+                shape, dtype = store.spec(name)
+                if shape != tuple(shard[field].shape):
+                    return None, f"{name!r} shape {shape} != {tuple(shard[field].shape)}"
+                if dtype not in _DTYPES:
+                    return None, f"{name!r} has unsupported dtype {dtype!r}"
+        return view, None
+    return None, f"no shard tensors under {path!r}"
+
+
+class OffloadShardedEmbedding(nn.Module):
+    """A sharded lookup table whose rows live on disk.
+
+    Same contract as the stock module it replaces: global row ids in, one
+    embedding per id out, float32. Rows are gathered from the checkpoint by
+    index and dequantized with the module's own quantization parameters —
+    the exact arithmetic of ``QuantizedEmbedding``, so outputs are
+    bit-identical to the resident table. Nothing of the table is held in
+    memory: the OS page cache keeps hot rows.
+    """
+
+    def __init__(self, table, view: _LookupStoreView):
+        super().__init__()
+        self.n_shards = table.n_shards
+        self.rows = table.rows
+        self.dim = table.dim
+        first = table.shard_0
+        self.group_size = first.group_size
+        self.bits = first.bits
+        self.mode = first.mode
+        self.fields = ("weight", "scales") + (
+            ("biases",) if first.get("biases") is not None else ()
+        )
+        self.view = view
+        self.rows_read = 0
+        self.lookups = 0
+
+    def __call__(self, gid: mx.array) -> mx.array:
+        flat = np.array(gid.reshape(-1), copy=False)
+        shard_of = flat // self.rows
+        row_of = flat % self.rows
+        out = mx.zeros((flat.size, self.dim), dtype=mx.float32)
+        for s in np.unique(shard_of).tolist():
+            sel = np.nonzero(shard_of == s)[0]
+            uniq, inv = np.unique(row_of[sel], return_inverse=True)
+            w, scales, biases = self.view.rows(s, uniq, self.fields)
+            emb = mx.dequantize(
+                w, scales, biases, group_size=self.group_size, bits=self.bits,
+                mode=self.mode,
+            )
+            emb = mx.take(emb, mx.array(inv), axis=0)
+            out = mx.put_along_axis(
+                out, mx.array(sel)[:, None], emb.astype(mx.float32), axis=0
+            )
+            self.rows_read += int(uniq.size)
+        self.lookups += int(flat.size)
+        return out.reshape(*gid.shape, self.dim)
+
+
+def apply_lookup_offload(model, model_path: str | Path) -> int:
+    """Replace covered sharded lookup tables with disk-backed ones.
+
+    Returns the number of tables wrapped. Must run before lazy weights are
+    materialized, like :func:`apply_expert_offload`: the replaced shards
+    are dropped unevaluated, so the table never costs memory.
+    """
+    model_dir = _resolve_model_dir(model_path)
+    if model_dir is None:
+        return 0
+    store = CheckpointExpertStore(model_dir, direct=False)
+    if not store:
+        return 0
+    wrapped = 0
+    for parent, key, table, path in list(_iter_sharded_lookups(model)):
+        view, reason = _resolve_lookup_view(table, store, path)
+        if view is None:
+            logger.info("boyle: lookup table %s stays resident (%s)", path, reason)
+            continue
+        new = OffloadShardedEmbedding(table, view)
+        if isinstance(parent, nn.Module):
+            setattr(parent, key, new)
+        else:
+            parent[key] = new
+        wrapped += 1
+        _sync_and_clear_cache()
+    if wrapped:
+        logger.info("boyle: %d lookup table(s) streamed from disk", wrapped)
+    return wrapped
+

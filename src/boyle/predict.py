@@ -268,6 +268,7 @@ class Forecast:
     accuracy_notes: list = field(default_factory=list)
     notes: list = field(default_factory=list)
     dense: bool = False
+    lookup_bytes: int = 0
 
     def render(self) -> str:
         if not self.fits:
@@ -296,6 +297,12 @@ class Forecast:
             f"(headroom to ~{self.max_context_headroom})",
             f"  disk: {fmt_size(self.store_bytes)} checkpoint",
         ]
+        if self.lookup_bytes:
+            lines.insert(
+                2,
+                f"  lookup tables: {fmt_size(self.lookup_bytes)} n-gram PLE "
+                "streamed from disk by row (not counted as resident)",
+            )
         for row in self.accuracy_rows:
             ref = f" ({row['reference']})" if row.get("reference") else ""
             lines.append(
@@ -362,7 +369,8 @@ def predict(
             curve_source="dense (runs resident)", hit_rate=1.0,
             max_context_headroom=max_context_for(
                 anatomy, budget, p.fraction, headroom=headroom),
-            store_bytes=anatomy.resident_bytes,
+            store_bytes=anatomy.resident_bytes + anatomy.lookup_bytes,
+            lookup_bytes=anatomy.lookup_bytes,
             bandwidth_bytes_s=bw, accuracy_rows=rows,
             accuracy_notes=accuracy["notes"], notes=notes,
         )
@@ -458,7 +466,8 @@ def predict(
         tok_s_hi=tok_s * band,
         ttft_cold_s=ttft,
         max_context_headroom=max_context_for(anatomy, budget, p.fraction, headroom=headroom),
-        store_bytes=anatomy.resident_bytes + anatomy.expert_bytes,
+        store_bytes=anatomy.resident_bytes + anatomy.expert_bytes + anatomy.lookup_bytes,
+        lookup_bytes=anatomy.lookup_bytes,
         bandwidth_bytes_s=bw,
         accuracy_rows=rows,
         accuracy_notes=accuracy["notes"],
