@@ -120,3 +120,28 @@ def test_predict_dense_model_reports_resident_only_forecast():
     assert "dense model: runs resident" in text
     assert "band" not in text.split("note:")[0]
     assert fc.store_bytes == fc.plan.resident_bytes
+
+
+def test_predict_fully_resident_plan_has_no_expert_io(monkeypatch):
+    """A budget with a slot for every expert (Flash-Next at 88 GB once its
+    PLE table streams) must not extrapolate the routing curve into phantom
+    misses: hit rate 1.0, no I/O term, no cold fill, and the disk figure
+    counts the streamed lookup table."""
+    import boyle.predict as p
+    from boyle.budget import ModelAnatomy
+
+    anatomy = ModelAnatomy(
+        resident_bytes=4_000_000_000,
+        layers=tuple((512, 1_500_000_000) for _ in range(48)),
+        kv_bytes_per_token=100_000,
+        lookup_bytes=32_000_000_000,
+    )
+    monkeypatch.setattr(p, "_anatomy", lambda m: (anatomy, {"model_type": "qwen4_exp"}, True))
+    monkeypatch.setattr(p, "calibrate", lambda: {"bandwidth_bytes_s": 5e9})
+    fc = p.predict("synthetic/flash-next", "88GB", max_context=8192)
+    assert fc.fits and fc.fully_resident and fc.plan.fraction == 1.0
+    assert fc.hit_rate == 1.0 and fc.tok_s == 0.0 and fc.ttft_cold_s == 0.0
+    text = fc.render()
+    assert "all experts resident" in text and "upper bound" not in text
+    assert "lookup tables: 32.00 GB" in text
+    assert fc.store_bytes == 4_000_000_000 + 48 * 1_500_000_000 + 32_000_000_000
