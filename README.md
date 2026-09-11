@@ -32,10 +32,27 @@ Two machines: an M5 Max (128 GB) and a 2021 M1 Pro MacBook Pro (32 GB) — the s
 | Qwen3-235B-A22B-4bit | 132 GB | 70 GB | **11.7 tok/s** | `bench`, within the pre-run forecast band (12.5 ± 25%) |
 | Qwen3-235B-A22B-4bit | 132 GB | 90 GB | ~15.5 tok/s | research-record anchor |
 | Qwen3.5-397B-A17B-4bit | 224 GB | 90 GB | **7.2 tok/s** | live agent tool-exchange behind `serve`; **load 1.5 s**; forecast band 7.6–11.9 |
+| Qwen3.8-Flash-Next-4bit | 112 GB | 88 GB | **17.1 tok/s** | `bench`; every expert resident, the 32 GB n-gram table streamed by row; load 0.8 s, peak 79 GB; agreement with mlx-vlm on the same weights: median KL 0.005 nats |
 
 Decode is bit-identical to the resident model at any budget (asserted token-by-token in the test suite); over-capacity prefill is rounding-equivalent (same math, different batching — text has matched resident output on every model measured). Accuracy is therefore a property of the *model*, not the budget: an exact-offload 397B at 90 GB scored 0.96 on gsm8k (n=100) because that is what the model scores.
 
 The load time is real: boyle wraps expert layers *before* weights materialize, so a 224 GB checkpoint is serving requests ~2 seconds after you hit enter — the first request then pays the expert fill (~35 s on the 397B; forecast up front by `predict`).
+
+### Qwen3.8-Flash-Next on a 128 GB Mac
+
+Qwen3.8-Flash-Next (`qwen4_exp`: 48 layers, 512 experts, 10 routed per token) spends 32 GB of its 111.5 GB 4-bit checkpoint on a hashed n-gram embedding table that is read 16 rows per token. boyle streams that table by row, so nothing of it is wired, which leaves 4 GB of resident weights and 75.5 GB of experts: at an 88 GB budget every expert has a slot and decode does no expert I/O.
+
+Measured on an M5 Max (128 GB) with `mlx-community/Qwen3.8-Flash-Next-4bit`: load 0.8 s, first request 3.1 s (cold expert fill), 17.1 tok/s steady decode, 79 GB peak, 32K context guaranteed by the plan. Outputs were compared with mlx-vlm on the same weights over 3,600 teacher-forced positions: median KL 0.005 nats, argmax agreement 94 to 96%, next-token NLL within 0.01 nats. That comparison found a wrong n-gram hash seed in the mlx-lm port, fixed on the branch below.
+
+mlx-lm does not ship `qwen4_exp` yet (PR #1788 plus the fixes from this work), so install it from the branch first:
+
+```bash
+uv pip install "mlx-lm @ git+https://github.com/beatakouchnir/mlx-lm@qwen4-exp-mlx-vlm-layout"
+boyle predict mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB --max-context 32768
+boyle serve   mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB
+```
+
+At smaller budgets the experts stream like any other MoE and `predict` prints the fraction and expected hit rate; the n-gram table is streamed at every budget.
 
 ## `predict` — know before you download
 
