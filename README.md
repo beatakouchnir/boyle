@@ -32,7 +32,7 @@ Two machines: an M5 Max (128 GB) and a 2021 M1 Pro MacBook Pro (32 GB) — the s
 | Qwen3-235B-A22B-4bit | 132 GB | 70 GB | **11.7 tok/s** | `bench`, within the pre-run forecast band (12.5 ± 25%) |
 | Qwen3-235B-A22B-4bit | 132 GB | 90 GB | ~15.5 tok/s | research-record anchor |
 | Qwen3.5-397B-A17B-4bit | 224 GB | 90 GB | **7.2 tok/s** | live agent tool-exchange behind `serve`; **load 1.5 s**; forecast band 7.6–11.9 |
-| Qwen3.8-Flash-Next-4bit | 112 GB | 88 GB | **17.1 tok/s** | `bench`; every expert resident, the 32 GB n-gram table streamed by row; load 0.8 s, peak 79 GB; agreement with mlx-vlm on the same weights: median KL 0.005 nats |
+| Qwen3.8-Flash-Next-4bit | 112 GB | 88 GB | **17.1 tok/s** | `bench`; n-gram table streamed by row; load 0.8 s, peak 79 GB; mlx-vlm agreement on the same weights: median KL 0.005 nats. PLE-bound, so full speed holds down to a **32 GB** budget (table below) |
 
 Decode is bit-identical to the resident model at any budget (asserted token-by-token in the test suite); over-capacity prefill is rounding-equivalent (same math, different batching — text has matched resident output on every model measured). Accuracy is therefore a property of the *model*, not the budget: an exact-offload 397B at 90 GB scored 0.96 on gsm8k (n=100) because that is what the model scores.
 
@@ -52,7 +52,18 @@ boyle predict mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB --max-context 
 boyle serve   mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB
 ```
 
-At smaller budgets the experts stream like any other MoE and `predict` prints the fraction and expected hit rate; the n-gram table is streamed at every budget.
+Below that threshold the experts stream, but decode stays flat — the 32 GB n-gram table is streamed at every budget, so *it*, not expert I/O, sets the floor, and shrinking the expert budget is free until the experts get very tight:
+
+| budget | experts resident | decode |
+|---|---|---|
+| 88 GB | 100% | 16.4 tok/s |
+| 64 GB | 70% | 18.1 tok/s |
+| 48 GB | 49% | 18.1 tok/s |
+| 40 GB | 38% | 17.8 tok/s |
+| 32 GB | 27% | 16.5 tok/s |
+| 24 GB | 17% | 11.8 tok/s |
+
+So a 111.5 GB checkpoint serves at full speed in **32 GB** — 2.5× below its all-resident working set — before expert misses finally bite at 24 GB (all `bench`, M5 Max 128 GB). One caveat: `predict` does not yet model this family (no routing trace — `trace` is a v0.2 verb), so it reads from a generic prior and *over*-forecasts the offload budgets; trust `bench`, not the forecast, for `qwen4_exp` until the family is anchored.
 
 ## `predict` — know before you download
 
