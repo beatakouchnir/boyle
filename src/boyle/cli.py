@@ -47,6 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         if verb == "bench":
             p.add_argument("--max-tokens", type=int, default=96)
             p.add_argument("--colo", help="colocated store dir")
+        if verb == "trace":
+            p.add_argument("--max-context", type=int, default=8192)
+            p.add_argument("--headroom", default="4GB")
+            p.add_argument("--max-tokens", type=int, default=512,
+                           help="decode steps to trace (more tokens = steadier curve)")
+            p.add_argument("--colo", help="colocated store dir")
         if verb == "serve":
             p.add_argument("--port", type=int, help="default: 11434 if free, else 11435")
             p.add_argument("--host", default="127.0.0.1")
@@ -67,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         return _predict(args)
     if args.verb == "bench":
         return _bench(args)
+    if args.verb == "trace":
+        return _trace(args)
     if args.verb == "serve":
         return _serve(args)
     if args.verb == "build":
@@ -149,6 +157,33 @@ def _bench(args) -> int:
         f"{verdict}"
     )
     return 0 if within else 3
+
+
+def _trace(args) -> int:
+    """Capture a decode routing trace and add its family curve to predict."""
+    import json
+
+    from boyle.trace import capture_curve, write_curve
+
+    if not args.model or not args.budget:
+        print("boyle trace: model and --budget are required "
+              "(use a streaming budget, fraction < 1.0)", file=sys.stderr)
+        return 2
+    print(f"[trace] loading {args.model} at {args.budget} and decoding "
+          f"{args.max_tokens} tokens...", file=sys.stderr)
+    family, curve = capture_curve(
+        args.model, args.budget,
+        max_tokens=args.max_tokens, max_context=args.max_context,
+        headroom=args.headroom, colo_dir=args.colo,
+    )
+    path = write_curve(family, curve)
+    print(f"[trace] added family '{family}' to {path} "
+          f"({curve['n_layers']}x{curve['n_experts']} experts, k={curve['k']}; "
+          f"hit rate {curve['decode_hit_rate'][0]:.2f}@{curve['fractions'][0]} "
+          f"-> {curve['decode_hit_rate'][-1]:.2f}@{curve['fractions'][-1]})",
+          file=sys.stderr)
+    print(json.dumps({family: curve}, indent=2))
+    return 0
 
 
 def _serve(args) -> int:

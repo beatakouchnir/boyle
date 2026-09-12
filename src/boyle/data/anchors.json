@@ -48,6 +48,14 @@
       "source": "quantization-ladder benchmark record, capacity sweep at 64/128 experts (older runtime: memmap reads, bookkeeping overhead included; publication pending)",
       "runtime": "memmap",
       "base_note": "only anchor for this family; base absorbs the older fetch path, so speed forecasts run conservative"
+    },
+    {
+      "family": "qwen4_exp",
+      "model": "mlx-community/Qwen3.8-Flash-Next-4bit",
+      "quant_bits": 4,
+      "fraction": 1.0,
+      "tok_s": 16.4,
+      "source": "boyle bench 2026-09-12, M5 Max 128 GB (all experts resident at 88 GB; PLE table streamed by row)"
     }
   ]
 }
