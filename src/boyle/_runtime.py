@@ -955,12 +955,43 @@ def offload_stats(model) -> dict:
     }
 
 
+def offload_traces(model) -> tuple[list[list[list[int]]], int]:
+    """Per-layer routing traces captured when ``RECORD_TRACE`` is on.
+
+    Returns ``(traces, n_experts)`` where each trace is the list of per-install
+    routed-expert-id lists for one offloaded layer (a prefill entry of
+    ``prompt_len * k`` ids followed by one entry of ``k`` ids per decode step).
+    Empty when nothing was captured (e.g. the cache stayed warm). Mirrors the
+    tree walk in :func:`offload_stats`.
+    """
+    traces: list[list[list[int]]] = []
+    n_experts = 0
+    stack = [model]
+    seen: set[int] = set()
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, OffloadSwitchGLU):
+            if obj.cache.trace:
+                traces.append(obj.cache.trace)
+                n_experts = obj.cache.n_experts
+            continue
+        if isinstance(obj, dict):
+            stack.extend(obj.values())
+        elif isinstance(obj, (list, tuple)):
+            stack.extend(obj)
+    return traces, n_experts
+
+
 __all__ = [
     "CheckpointExpertStore",
     "ColoStore",
     "OffloadSwitchGLU",
     "apply_expert_offload",
     "offload_stats",
+    "offload_traces",
     "get_timers",
     "reset_timers",
 ]

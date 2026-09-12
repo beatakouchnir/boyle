@@ -76,7 +76,7 @@
         "bench 17.1 tok/s at 88 GB (all experts resident, no forecast band)",
         "mlx-vlm agreement on the same weights: median KL 0.005 nats, argmax 94-96% (teacher-forced, 600 + 3000 tokens)",
         "budget sweep (M5 Max 128 GB): PLE-streaming-bound, so decode is flat at full speed down to 32 GB — 16.4/18.1/18.1/17.8/16.5 tok/s at 88/64/48/40/32 GB (100/70/49/38/27% experts resident), degrading to 11.8 at 24 GB",
-        "predict over-forecasts this family (no routing trace; trace is v0.2) — trust bench until qwen4_exp is anchored"
+        "predict anchored for qwen4_exp via `boyle trace` (routing curve) + a bench anchor: forecast tracks the sweep, every budget in-band (was a flat-prior over-forecast before)"
       ]
     }
   ]

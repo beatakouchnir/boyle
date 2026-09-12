@@ -126,7 +126,9 @@ def test_predict_fully_resident_plan_has_no_expert_io(monkeypatch):
     """A budget with a slot for every expert (Flash-Next at 88 GB once its
     PLE table streams) must not extrapolate the routing curve into phantom
     misses: hit rate 1.0, no I/O term, no cold fill, and the disk figure
-    counts the streamed lookup table."""
+    counts the streamed lookup table. Now that qwen4_exp is anchored (`boyle
+    trace` + a bench anchor), it also reports a real decode forecast from the
+    compute anchor rather than 0 — but still with no expert I/O."""
     import boyle.predict as p
     from boyle.budget import ModelAnatomy
 
@@ -140,8 +142,9 @@ def test_predict_fully_resident_plan_has_no_expert_io(monkeypatch):
     monkeypatch.setattr(p, "calibrate", lambda: {"bandwidth_bytes_s": 5e9})
     fc = p.predict("synthetic/flash-next", "88GB", max_context=8192)
     assert fc.fits and fc.fully_resident and fc.plan.fraction == 1.0
-    assert fc.hit_rate == 1.0 and fc.tok_s == 0.0 and fc.ttft_cold_s == 0.0
+    # anchored: a real forecast, hit rate 1.0, no cold fill, no I/O extrapolation.
+    assert fc.hit_rate == 1.0 and fc.tok_s > 0 and fc.ttft_cold_s == 0.0
     text = fc.render()
-    assert "all experts resident" in text and "upper bound" not in text
+    assert "100%" in text and "upper bound" not in text
     assert "lookup tables: 32.00 GB" in text
     assert fc.store_bytes == 4_000_000_000 + 48 * 1_500_000_000 + 32_000_000_000

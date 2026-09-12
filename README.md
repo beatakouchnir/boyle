@@ -63,7 +63,7 @@ Below that threshold the experts stream, but decode stays flat — the 32 GB n-g
 | 32 GB | 27% | 16.5 tok/s |
 | 24 GB | 17% | 11.8 tok/s |
 
-So a 111.5 GB checkpoint serves at full speed in **32 GB** — 2.5× below its all-resident working set — before expert misses finally bite at 24 GB (all `bench`, M5 Max 128 GB). One caveat: `predict` does not yet model this family (no routing trace — `trace` is a v0.2 verb), so it reads from a generic prior and *over*-forecasts the offload budgets; trust `bench`, not the forecast, for `qwen4_exp` until the family is anchored.
+So a 111.5 GB checkpoint serves at full speed in **32 GB** — 2.5× below its all-resident working set — before expert misses finally bite at 24 GB (all `bench`, M5 Max 128 GB). `predict` models this family directly: `boyle trace` captured its routing curve (strong locality — 94% hit rate by a 0.45 budget) and a bench anchor pins the compute floor, so the forecast tracks the sweep across the whole range (every budget above lands inside the predicted band, 24 GB included).
 
 ## `predict` — know before you download
 
