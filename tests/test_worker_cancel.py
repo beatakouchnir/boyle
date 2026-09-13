@@ -44,7 +44,7 @@ class _FakeCore(GenerationCore):
 
     def _generate_on_worker(self, tokens, want, temperature, top_p,
                             parse_tools, chat_ctx, logprobs_k=None,
-                            seed=None, cancel=None):
+                            seed=None, top_k=0, cancel=None):
         for _ in range(self.tokens_per_job):
             if cancel is not None and cancel.is_set():
                 break
