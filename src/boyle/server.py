@@ -36,8 +36,14 @@ OLLAMA_PORT = 11434
 FALLBACK_PORT = 11435
 
 
-def _seeded_sampler(temperature: float, top_p: float, seed: int | None):
-    """Categorical/top-p sampler over an explicit key chain."""
+def _seeded_sampler(temperature: float, top_p: float, seed: int | None,
+                    top_k: int = 0):
+    """Categorical/top-k/top-p sampler over an explicit key chain.
+
+    top_k <= 0 disables the top-k cut. Order is temperature, top-k, top-p —
+    the transformers order, which the vendor generation_config.json values
+    (Qwen3.8: temperature 1.0, top_k 20, top_p 0.95) are stated against.
+    """
     import os as _os
 
     import mlx.core as mx
@@ -49,6 +55,10 @@ def _seeded_sampler(temperature: float, top_p: float, seed: int | None):
     def sample(logprobs: mx.array) -> mx.array:
         state["key"], sub = mx.random.split(state["key"])
         logits = logprobs * (1 / temperature)
+        if top_k > 0 and top_k < logits.shape[-1]:
+            # k-th largest logit is the admission threshold (ties admitted)
+            kth = mx.sort(logits, axis=-1)[..., -top_k]
+            logits = mx.where(logits < mx.expand_dims(kth, -1), mx.array(-float("inf")), logits)
         if 0 < top_p < 1:
             probs = mx.softmax(logits, axis=-1)
             order = mx.argsort(-logits, axis=-1)
@@ -352,6 +362,7 @@ class GenerationCore:
         chat_ctx: tuple | None = None,
         logprobs_k: int | None = None,
         seed: int | None = None,
+        top_k: int = 0,
     ):
         """Returns an iterator of ("delta", text) events ending with
         ("final", Reply). Validation is EAGER — deliberately not a generator
@@ -377,7 +388,7 @@ class GenerationCore:
         out: "queue.Queue" = queue.Queue()
         cancel = threading.Event()
         self._jobs.put(((tokens, want, temperature, top_p, parse_tools,
-                         chat_ctx, logprobs_k, seed, cancel), out))
+                         chat_ctx, logprobs_k, seed, top_k, cancel), out))
 
         def _events():
             while True:
@@ -396,7 +407,8 @@ class GenerationCore:
         return _EventStream(_events(), cancel)
 
     def _generate_on_worker(self, tokens, want, temperature, top_p, parse_tools,
-                            chat_ctx, logprobs_k=None, seed=None, cancel=None):
+                            chat_ctx, logprobs_k=None, seed=None, top_k=0,
+                            cancel=None):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -409,7 +421,7 @@ class GenerationCore:
         # Explicit keys are immune to threads, streams, and compile capture,
         # and give OpenAI seed semantics for free: same seed, same draw.
         if temperature > 0:
-            sampler = _seeded_sampler(temperature, top_p, seed)
+            sampler = _seeded_sampler(temperature, top_p, seed, top_k)
         else:
             sampler = make_sampler(temp=0.0)
         r = Reply(prompt_tokens=len(tokens), cached_tokens=cached)
@@ -755,6 +767,7 @@ def make_handler(core: GenerationCore):
                                opts.get("temperature", core.default_temperature))),
                 float(body.get("top_p", opts.get("top_p", 1.0))),
                 int(seed) if seed is not None else None,
+                int(body.get("top_k", opts.get("top_k", 0)) or 0),
             )
 
         # -- OpenAI surface ------------------------------------------------
@@ -763,7 +776,7 @@ def make_handler(core: GenerationCore):
             body = self._body()
             messages = body.get("messages") or []
             tools = body.get("tools") or None
-            max_tokens, temp, top_p, seed = self._gen_params(body)
+            max_tokens, temp, top_p, seed, top_k = self._gen_params(body)
             thinking = bool(body.get("enable_thinking") or body.get("think"))
             logprobs_k = (int(body.get("top_logprobs") or 0)
                           if body.get("logprobs") else None)
@@ -773,7 +786,7 @@ def make_handler(core: GenerationCore):
             parse = bool(tools) and core.tools_supported
             events = core.generate(tokens, max_tokens, temp, top_p, parse,
                                    chat_ctx=(messages, tools),
-                                   logprobs_k=logprobs_k, seed=seed)
+                                   logprobs_k=logprobs_k, seed=seed, top_k=top_k)
             self._events = events   # so a dead client cancels it
             rid = f"chatcmpl-{int(time.time() * 1000)}"
 
@@ -846,10 +859,10 @@ def make_handler(core: GenerationCore):
             prompt = body.get("prompt") or ""
             if isinstance(prompt, list):
                 prompt = prompt[0] if prompt else ""
-            max_tokens, temp, top_p, seed = self._gen_params(body)
+            max_tokens, temp, top_p, seed, top_k = self._gen_params(body)
             tokens = list(core.m.tokenizer.encode(prompt))
             events = core.generate(tokens, max_tokens, temp, top_p, False,
-                                   seed=seed)
+                                   seed=seed, top_k=top_k)
             self._events = events   # so a dead client cancels it
             rid = f"cmpl-{int(time.time() * 1000)}"
             if body.get("stream"):
