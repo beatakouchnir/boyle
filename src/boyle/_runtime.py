@@ -369,9 +369,10 @@ class _GLUStoreView:
 class ExpertCache:
     """Contiguous resident slots over one layer's experts, LRU eviction.
 
-    LRU because the capacity law says so: routing is flat, LFU loses badly,
-    and clairvoyant OPT beats LRU by +0.07 hit rate at real budgets — there
-    is no policy headroom worth code. Holds no reference to the wrapped
+    LRU because the capacity law says so: routing is flat and LFU loses
+    badly. Clairvoyant OPT beats LRU by +0.02 hit rate at 60% residency and
+    by up to +0.20 at 10-25% (docs/report.md, section 2); boyle did not try
+    to close that gap. Holds no reference to the wrapped
     module's expert tensors — only the resident slots and the store view.
     That is the difference between saving memory and adding it: keeping the
     source tensors referenced alongside the slots costs the full expert set

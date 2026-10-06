@@ -19,7 +19,7 @@ Metal wires the *entire* buffer on first kernel use — a 3 MB one-expert gather
 
 ## 2 · The capacity law (three families, one curve)
 
-Expert routing is **flat** in every family measured — gemma-lineage (128 experts), Qwen (512), DeepSeek-lineage GLM (256, sigmoid + shared expert): LFU ≪ LRU at every budget; a clairvoyant (Belady-optimal) cache beats LRU by only **+0.07 hit rate**; per-domain expert unions cover 42–46% of all (layer, expert) pairs. **No hot set exists.**
+Expert routing is **flat** in every family measured — gemma-lineage (128 experts), Qwen (512), DeepSeek-lineage GLM (256, sigmoid + shared expert): LFU ≪ LRU at every budget; per-domain expert unions cover 42–46% of all (layer, expert) pairs. **No hot set exists.** A clairvoyant (Belady-optimal) cache still beats LRU, by an amount that depends on residency: on Qwen3.5-397B, +0.18 hit rate at 10% resident, +0.13 at 20%, +0.10 at 30%, +0.06 at 40% and +0.02 at 60%; on OLMoE (64 experts), +0.12 at 12.5%, +0.20 at 25% and +0.11 at 50% (replays of live decode routing on oMLX, September 2026). An earlier version of this report gave a single +0.07; that figure holds only near 40% residency.
 
 Consequently, over-wall speed is a function of two numbers only: the budget-to-expert-mass ratio (via one reusable hit curve) and bytes-per-miss. A trace-driven simulator built on that curve predicted live hit rates within 1–3 points on four model/quant configurations — and the same curves, shipped inside boyle, predicted 12.5 tok/s for a 235B configuration nobody had measured; the live bench read 11.7. The curves are quant-independent: distilling the 4-bit and 8-bit routing traces of the same model produces identical curves. And the forecast transfers across machines: on a 2021 M1 Pro (32 GB — different GPU class, different disk, probed locally), the same machinery predicted 14.7 tok/s for a 30B model in a 12 GB budget; the live bench measured 14.5.
 
@@ -64,13 +64,13 @@ Quantization, not offload, is the axis that costs accuracy — and task-dependen
 | diverse-prompt batching | ~9.5 tok/s aggregate at any batch size | drive bandwidth; no cross-user expert sharing exists |
 | per-layer sync | ~50 ms/token at 397B scale | architectural: router output gates which weights must exist |
 | fetch | ~12.6 GB/s | the NVMe itself (parallel-random beats sequential) |
+| eviction policy over LRU | +0.02 hit rate at 60% resident, up to +0.18–0.20 at 10–25% | Belady-optimal replay (§2); LFU loses at every budget, and no other policy was tried |
 
 ### Dead, with cause of death
 
 | idea | verdict |
 |---|---|
 | learned / temporal prefetch | structurally starved — the LRU slots already are the recency predictor (confirmed on three families) |
-| eviction-policy cleverness | optimal caching caps the win at +0.07 hit rate; LFU loses everywhere |
 | speculative decoding | +11% best and decays — consecutive tokens share only ~27% of experts; flat routing denies sharing in time exactly as it does across users |
 | sentinel-polled sync | 14% *regression* — the sync cost was never readback overhead |
 | userspace second-level cache behind the slots | 3 hits in 19,594 — a victim cache behind an LRU sees only the reuse-poor rejected tail |
