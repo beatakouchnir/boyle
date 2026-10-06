@@ -172,7 +172,7 @@ Tool calls are parsed for the Qwen family — both dialects (Qwen3 hermes JSON a
 
 ## Why it works — the 30-second version
 
-Expert routing is *flat*: across three model families there is no hot set — LFU loses to LRU everywhere, and a clairvoyant cache beats LRU by 0.07 hit rate. That kills clever prefetching, but it makes speed a function of two numbers only: budget fraction (via one reusable hit curve) and bytes per miss. That is why a forecast from checkpoint headers plus a 10-second disk probe lands within a ±25% band, and why the levers that survived measurement are exactly three: direct I/O with parallel installs, a colocated expert store, and expert-major prefill. The full research record — every lever tried, every dead end, every number — is in [docs/report.md](https://github.com/beatakouchnir/boyle/blob/main/docs/report.md).
+Expert routing is *flat*: across three model families there is no hot set, and LFU loses to LRU everywhere. That kills clever prefetching, but it makes speed a function of two numbers only: budget fraction (via one reusable hit curve) and bytes per miss. That is why a forecast from checkpoint headers plus a 10-second disk probe lands within a ±25% band, and why the levers that survived measurement are exactly three: direct I/O with parallel installs, a colocated expert store, and expert-major prefill. The full research record — every lever tried, every dead end, every number — is in [docs/report.md](https://github.com/beatakouchnir/boyle/blob/main/docs/report.md).
 
 ## Lineage
 
