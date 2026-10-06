@@ -23,10 +23,10 @@ boyle ran mixture-of-experts models inside a declared memory budget on Apple sil
 
 ## The last release
 
-The final release, 0.2.0, still installs and runs; no further fixes will follow.
+The final release, 0.2.1, still installs and runs; no further fixes will follow.
 
 ```bash
-uv tool install boyle==0.2.0
+uv tool install boyle==0.2.1
 boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB   # headers only, nothing downloaded
 boyle bench   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
 ```
