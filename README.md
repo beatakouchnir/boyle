@@ -1,58 +1,65 @@
 # boyle
 
-[![ci](https://github.com/beatakouchnir/boyle/actions/workflows/ci.yml/badge.svg)](https://github.com/beatakouchnir/boyle/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/boyle)](https://pypi.org/project/boyle/)
 [![license](https://img.shields.io/pypi/l/boyle)](https://github.com/beatakouchnir/boyle/blob/main/LICENSE)
 
-**Run the model you want at the memory pressure you specify.**
+> **Archived, October 2026.** boyle is no longer maintained. Its expert-offload runtime now lives in [oMLX](https://github.com/jundot/omlx); to run a mixture-of-experts model larger than memory on Apple silicon, use oMLX's [MoE expert offload](https://github.com/jundot/omlx/blob/main/docs/MoE_Expert_Offload.md). This repository remains as the measurement record: what each memory budget bought on real hardware, how well the speed forecasts held, and the research report behind both.
 
-Declare a memory budget; boyle runs mixture-of-experts models inside it on Apple silicon — including models far larger than RAM — with decode outputs **bit-identical** to the fully-resident model, a **speed forecast before you download anything**, and an OpenAI- and Ollama-compatible server your existing tools connect to.
+boyle ran mixture-of-experts models inside a declared memory budget on Apple silicon, keeping a fraction of each layer's experts resident and streaming the rest from the checkpoint, with decode outputs bit-identical to the fully resident model. It also forecast decode speed for a budget from checkpoint headers alone, before any weights were downloaded. The name is from Boyle's law (PV = k): memory is traded for speed at a measured rate.
+
+## Where each part went
+
+| boyle | upstream | status (October 2026) |
+|---|---|---|
+| expert offload runtime (resident slots, bit-identical decode) | oMLX [#2595](https://github.com/jundot/omlx/pull/2595) | merged |
+| positional expert reads (DeepSeek V4.1) | oMLX [#3628](https://github.com/jundot/omlx/pull/3628) | merged |
+| expert-major over-capacity prefill | oMLX [#3654](https://github.com/jundot/omlx/pull/3654) | merged |
+| GLM DSA MoE offload | oMLX [#3696](https://github.com/jundot/omlx/pull/3696) | merged |
+| budget → residency fit (`predict`'s FITS line) | oMLX [#3676](https://github.com/jundot/omlx/pull/3676) | open |
+| live expert-cache hit rate | oMLX [#3910](https://github.com/jundot/omlx/pull/3910) | open |
+| decode speed forecast (`predict`, `bench`, `trace`, routing curves) | oMLX [Discussion #4288](https://github.com/jundot/omlx/discussions/4288) | proposal |
+| `serve` (OpenAI- and Ollama-compatible server) | oMLX's own server | not ported; oMLX already covers the OpenAI-compatible side |
+| colocated expert store (`build`) | none | not upstreamed |
+
+## The last release
+
+The final release, 0.2.0, still installs and runs; no further fixes will follow.
 
 ```bash
-boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB   # before downloading
-boyle serve   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
+uv tool install boyle==0.2.0
+boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB   # headers only, nothing downloaded
+boyle bench   mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
 ```
 
-![boyle predict: a 224 GB model forecast from headers alone, nothing downloaded](https://raw.githubusercontent.com/beatakouchnir/boyle/main/docs/media/predict.gif)
+| command | what it does |
+|---|---|
+| `predict` | fit, decode-speed band, cold-fill time and context limit for a budget, from checkpoint headers plus a one-time disk probe |
+| `bench` | measures decode on this machine and reports whether it landed inside `predict`'s band |
+| `trace` | records expert routing during decode and distills it into a hit-rate curve for `predict` |
+| `run` | one-shot generation under a budget |
+| `serve` | OpenAI-compatible (`/v1`) and Ollama-compatible (`/api/*`) server under a budget |
+| `build` | colocated expert store: one contiguous read per cache miss instead of nine (+13% on the measured serving ceiling) |
 
-*Named for Robert Boyle: PV = k. What you trade for pressure here is speed, and the exchange rate is measured.*
+Supported models and how each was qualified are listed in [COMPATIBILITY.md](https://github.com/beatakouchnir/boyle/blob/main/COMPATIBILITY.md). Qwen3.8-Flash-Next needs mlx-lm with `qwen4_exp` (PR #1788).
 
-> **Status: v0.1.** Working today: `predict`, `run`, `serve`, `bench`,
-> `build`. Landing in v0.2: `trace` (routing capture that adds unmeasured
-> families to `predict`'s curves and orders stores by co-activation).
+## What a budget bought, measured
 
-## What a budget buys you — measured on real hardware
-
-Two machines: an M5 Max (128 GB) and a 2021 M1 Pro MacBook Pro (32 GB) — the second bought nothing but a `git clone`, a forecast, and a `bench` that landed 1.4% from it.
+Two machines: an M5 Max (128 GB) and a 2021 M1 Pro (32 GB).
 
 | model | on disk | budget | decode | how verified |
 |---|---|---|---|---|
-| Qwen3-30B-A3B-4bit | 17 GB | 12 GB | ~18 tok/s | real OpenCode session; warm agent turn **3.3 s** (cold 28.7 s) |
-| Qwen3-30B-A3B-4bit, **2021 M1 Pro 32 GB** | 17 GB | 12 GB | **14.5 tok/s** | `bench` vs a forecast made before the machine was ever measured: predicted 14.7 — off by 1.4%. At 20 GB: 17.5 vs 19.3 predicted, in band |
-| Qwen3-235B-A22B-4bit | 132 GB | 70 GB | **11.7 tok/s** | `bench`, within the pre-run forecast band (12.5 ± 25%) |
+| Qwen3-30B-A3B-4bit | 17 GB | 12 GB | ~18 tok/s | OpenCode session; warm agent turn 3.3 s (cold 28.7 s) |
+| Qwen3-30B-A3B-4bit, M1 Pro 32 GB | 17 GB | 12 GB | 14.5 tok/s | `bench`; forecast 14.7 (band 11.8–18.4). At 20 GB: 17.5 vs 19.3 forecast, in band |
+| Qwen3-235B-A22B-4bit | 132 GB | 70 GB | 11.7 tok/s | `bench`; forecast 12.5 ± 25% |
 | Qwen3-235B-A22B-4bit | 132 GB | 90 GB | ~15.5 tok/s | research-record anchor |
-| Qwen3.5-397B-A17B-4bit | 224 GB | 90 GB | **7.2 tok/s** | live agent tool-exchange behind `serve`; **load 1.5 s**; forecast band 7.6–11.9 |
-| Qwen3.8-Flash-Next-4bit | 112 GB | 88 GB | **17.1 tok/s** | `bench`; n-gram table streamed by row; load 0.8 s, peak 79 GB; mlx-vlm agreement on the same weights: median KL 0.005 nats. PLE-bound, so full speed holds down to a **32 GB** budget (table below) |
+| Qwen3.5-397B-A17B-4bit | 224 GB | 90 GB | 7.2 tok/s | agent tool exchange through `serve`; load 1.5 s; below the forecast band of 7.6–11.9 |
+| Qwen3.8-Flash-Next-4bit | 112 GB | 88 GB | 17.1 tok/s | `bench`; load 0.8 s, peak 79 GB; against mlx-vlm on the same weights, median KL 0.005 nats |
 
-Decode is bit-identical to the resident model at any budget (asserted token-by-token in the test suite); over-capacity prefill is rounding-equivalent (same math, different batching — text has matched resident output on every model measured). Accuracy is therefore a property of the *model*, not the budget: an exact-offload 397B at 90 GB scored 0.96 on gsm8k (n=100) because that is what the model scores.
+Decode is bit-identical to the resident model at every budget (asserted token by token in the test suite); over-capacity prefill is rounding-equivalent (the same math, batched differently). Accuracy is therefore a property of the model, not the budget: the 397B at 90 GB scored 0.96 on gsm8k (n=100). Loads take seconds because expert layers are wrapped before weights materialize; the first request then pays the cold expert fill (~35 s on the 397B).
 
-The load time is real: boyle wraps expert layers *before* weights materialize, so a 224 GB checkpoint is serving requests ~2 seconds after you hit enter — the first request then pays the expert fill (~35 s on the 397B; forecast up front by `predict`).
+### Qwen3.8-Flash-Next across budgets
 
-### Qwen3.8-Flash-Next on a 128 GB Mac
-
-Qwen3.8-Flash-Next (`qwen4_exp`: 48 layers, 512 experts, 10 routed per token) spends 32 GB of its 111.5 GB 4-bit checkpoint on a hashed n-gram embedding table that is read 16 rows per token. boyle streams that table by row, so nothing of it is wired, which leaves 4 GB of resident weights and 75.5 GB of experts: at an 88 GB budget every expert has a slot and decode does no expert I/O.
-
-Measured on an M5 Max (128 GB) with `mlx-community/Qwen3.8-Flash-Next-4bit`: load 0.8 s, first request 3.1 s (cold expert fill), 17.1 tok/s steady decode, 79 GB peak, 32K context guaranteed by the plan. Outputs were compared with mlx-vlm on the same weights over 3,600 teacher-forced positions: median KL 0.005 nats, argmax agreement 94 to 96%, next-token NLL within 0.01 nats. That comparison found a wrong n-gram hash seed in the mlx-lm port, fixed on the branch below.
-
-mlx-lm does not ship `qwen4_exp` yet (PR #1788 plus the fixes from this work), so install it from the branch first:
-
-```bash
-uv pip install "mlx-lm @ git+https://github.com/beatakouchnir/mlx-lm@qwen4-exp-mlx-vlm-layout"
-boyle predict mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB --max-context 32768
-boyle serve   mlx-community/Qwen3.8-Flash-Next-4bit --budget 88GB
-```
-
-Below that threshold the experts stream, but decode stays flat — the 32 GB n-gram table is streamed at every budget, so *it*, not expert I/O, sets the floor, and shrinking the expert budget is free until the experts get very tight:
+Flash-Next spends 32 GB of its 111.5 GB checkpoint on a hashed n-gram embedding table that is read 16 rows per token. boyle streamed that table by row, so the table, not expert I/O, sets the decode floor, and shrinking the expert budget cost nothing until the experts became very tight (`bench`, M5 Max 128 GB):
 
 | budget | experts resident | decode |
 |---|---|---|
@@ -63,9 +70,11 @@ Below that threshold the experts stream, but decode stays flat — the 32 GB n-g
 | 32 GB | 27% | 16.5 tok/s |
 | 24 GB | 17% | 11.8 tok/s |
 
-So a 111.5 GB checkpoint serves at full speed in **32 GB** — 2.5× below its all-resident working set — before expert misses finally bite at 24 GB (all `bench`, M5 Max 128 GB). `predict` models this family directly: `boyle trace` captured its routing curve (strong locality — 94% hit rate by a 0.45 budget) and a bench anchor pins the compute floor, so the forecast tracks the sweep across the whole range (every budget above lands inside the predicted band, 24 GB included).
+With a routing curve captured by `boyle trace` and one bench anchor, every budget above fell inside `predict`'s band, 24 GB included.
 
-## `predict` — know before you download
+## How well the forecasts held
+
+`predict` output for the 397B row above:
 
 ```
 $ boyle predict mlx-community/Qwen3.5-397B-A17B-4bit --budget 90GB --max-context 16384
@@ -78,106 +87,23 @@ boyle predict — mlx-community/Qwen3.5-397B-A17B-4bit
   accuracy [measured]: gsm8k (answer mode) = 0.96 (n=100)
 ```
 
-Reads only the checkpoint *headers* (a few hundred KB over ranged HTTP — never the weights), resolves your budget against exact tensor shapes, applies a routing curve distilled from measured traces, and calibrates to your disk with a one-time cold-read probe. `boyle bench` then measures the truth on your machine and tells you whether it landed in the band — the 235B row above is exactly that loop, closed at a fraction nobody had measured before.
+Out of sample, the forecast landed at 12.5 vs 11.7 tok/s measured (235B, 70 GB) and 14.7 vs 14.5 (30B on an M1 Pro never measured before; 19.3 vs 17.5 at 20 GB, in band). The known miss is the 397B: 7.2 tok/s through the HTTP server against a band of 7.6–11.9, because the model does not include serving overhead. Trace replay predicted live hit rates within 1–3 points on four configurations, and routing curves were identical at 4-bit and 8-bit. `predict` never forecast accuracy; its accuracy line is a lookup into measured rows.
 
-Forecasts are honest about their provenance: measured family curve vs flat-routing prior, compute anchor vs I/O-only upper bound — the output says which you're getting. **Accuracy is never forecast**; the accuracy line is lookup into measured rows, or silence.
+## Limits that were measured
 
-## The rest of the CLI
+- **Single stream.** Diverse-prompt batching is drive-bound at ~9.5 tok/s aggregate regardless of batch size.
+- **A sync per MoE layer per token** (~50 ms/token at 397B scale), because the router's output decides which weights must be present. Polling, event tricks and speculative decoding were measured and did not beat it.
+- **Small-expert models** (records under ~2 MB, e.g. OLMoE) are bound by per-read latency; forecasts there are upper bounds.
+- **4-bit was the best measured trade-off**; the drop to 3-bit is severe on some tasks.
 
-`run` — one-shot or scripted generation, with the honest footer:
+## Why speed was forecastable
 
-```
-$ boyle run mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB \
-    -p "In one sentence: what does a hash table do?" --max-tokens 40
-[boyle] fraction=0.387 slots=6.24 GB max_context=8192
-A hash table stores key-value pairs and uses a hash function to quickly map
-keys to indices in an array, enabling fast data retrieval. [...]
-[boyle] 40 tokens in 1.8s (21.8 tok/s) — expert cache hit rate 78.9%
-```
-
-`bench` — the trust loop, measured on this machine vs the forecast (output below is the real run from a 2021 M1 Pro 32 GB):
-
-```
-$ boyle bench mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB
-[bench] predicted 14.7 tok/s (band 11.8–18.4); loading...
-[bench] measured 14.5 tok/s steady (TTFT 2.8s, hit rate 87.3%) — WITHIN the predicted band 11.8–18.4
-```
-
-`build` — a colocated expert store: one contiguous read per cache miss instead of nine scattered ones (+13% on the measured serving ceiling; outputs verified token-identical to direct checkpoint reads):
-
-```
-$ boyle build mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
-[build] layer 48/48: 16.3 GB written
-[build] colo store: 16.31 GB -> ~/.cache/boyle/stores/mlx-community--Qwen3-30B-A3B-Instruct-2507-4bit
-$ boyle serve mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --budget 12GB --colo ~/.cache/boyle/stores/...
-```
-
-Stacked checkpoints only (Qwen, gemma lineage); per-expert-scheme checkpoints (OLMoE) are read directly by the runtime and need no store.
-
-## Works with your tools
-
-`boyle serve` exposes **two API surfaces from one model**: OpenAI-compatible (`/v1`, SSE streaming, tool calls) and Ollama-compatible (`/api/*`, NDJSON, real timing fields so UIs show true tok/s). It binds port 11434 when free, so Ollama-first apps discover it with zero config; if a real Ollama is running it politely falls back and prints the URL.
-
-![the official ollama CLI talking to boyle with zero config](https://raw.githubusercontent.com/beatakouchnir/boyle/main/docs/media/ollama.gif)
-
-| harness | connect via | config |
-|---|---|---|
-| **Ollama CLI & Python library** | native | zero config — `ollama list/ps/show/run` and `ollama.chat(...)` (incl. tools) verified against boyle |
-| **OpenCode** | OpenAI-compatible | provider block below |
-| **Cline / Continue** (VS Code) | OpenAI-compatible | base URL `http://127.0.0.1:11434/v1`, any API key |
-| **Open WebUI** | Ollama connector | zero config when boyle holds port 11434 |
-| **SillyTavern** | Custom OpenAI | API URL `http://127.0.0.1:11434/v1` |
-| aider, Zed, Goose, LibreChat, LangChain, … | OpenAI-compatible | same base URL |
-
-OpenCode (`~/.config/opencode/opencode.json`):
-
-```json
-{
-  "provider": {
-    "boyle": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "boyle (local)",
-      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
-      "models": {
-        "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit": {
-          "name": "Qwen3-30B via boyle",
-          "limit": { "context": 32768, "output": 4096 }
-        }
-      }
-    }
-  }
-}
-```
-
-Tool calls are parsed for the Qwen family — both dialects (Qwen3 hermes JSON and Qwen3.5/Coder XML blocks); other families stream text through untouched, and the matrix below says which is which. Conversations are prefix-cached, aligned against the chat template's own history rendering: an agent's warm turns re-prefill only the new suffix.
-
-## Support matrix
-
-| tier | models | tool calls | prefix cache |
-|---|---|---|---|
-| measured | Qwen3-30B/235B (4/8-bit), Qwen3.5-397B (4-bit), gemma-4-26B MoE, OLMoE | Qwen: parsed | full |
-| measured, hybrid-cache | Qwen3.5 family | parsed | warm within a user turn; each *new* user turn re-prefills once (~35 s at 397B) — hybrid attention caches cannot rewind |
-| expected-works | other Qwen3-MoE-family variants | parsed | full |
-| experimental | GLM-4.x/5.x MoE | passthrough | blocked on upstream mlx-lm support |
-| out of scope (v1) | dense models, CUDA/Linux, multi-user batching | | |
-
-**Untested models are announced, not undefined**: `serve` probes every model at startup (template roundtrip, cache rewindability) and tells you which prefix-cache class you're getting; `predict` labels measured curves vs priors. The exact tested list, what "tested" means, and the one-command qualification procedure for new releases live in [COMPATIBILITY.md](https://github.com/beatakouchnir/boyle/blob/main/COMPATIBILITY.md) — new notable MoE releases get qualified promptly, and a release needing code (new tool dialect, new cache type) gets a tracking issue.
-
-## Honest limits
-
-- **Single-stream by design.** Diverse-prompt batching is drive-bound (~9.5 tok/s aggregate regardless of batch size — measured); concurrency would move latency around, not create throughput. Requests queue FIFO.
-- **The speed floor is architectural**: per-layer expert residency requires a sync per MoE layer per token (~50 ms/token at 397B scale). Polling, event tricks, and speculative decoding were measured and lost — the research record has the receipts.
-- **Small-expert models** (records under ~2 MB, e.g. OLMoE) are per-read latency-bound; forecasts there are upper bounds, and `predict` says so.
-- Capture-quality quantization matters: 4-bit is the measured sweet spot; the cliff to 3-bit is severe on some tasks (see the accuracy notes `predict` prints).
-
-## Why it works — the 30-second version
-
-Expert routing is *flat*: across three model families there is no hot set, and LFU loses to LRU everywhere. That kills clever prefetching, but it makes speed a function of two numbers only: budget fraction (via one reusable hit curve) and bytes per miss. That is why a forecast from checkpoint headers plus a 10-second disk probe lands within a ±25% band, and why the levers that survived measurement are exactly three: direct I/O with parallel installs, a colocated expert store, and expert-major prefill. The full research record — every lever tried, every dead end, every number — is in [docs/report.md](https://github.com/beatakouchnir/boyle/blob/main/docs/report.md).
+Expert routing is flat: across three model families there is no hot set, and LFU loses to LRU at every budget. Speed is then a function of two numbers, the resident fraction (through one hit-rate curve per family) and bytes per miss, which is why a forecast from checkpoint headers plus a short disk probe landed within a ±25% band. The full record, including every lever tried and every dead end, is in [docs/report.md](https://github.com/beatakouchnir/boyle/blob/main/docs/report.md).
 
 ## Lineage
 
-The runtime descends from the expert-offload patch developed for [omlx](https://github.com/jundot/omlx) (PR #2595, Apache-2.0 — see NOTICE), by way of a measurement program whose adopted levers this package ships. Related upstream work: mlx PR #4249 (GPU-visible mmap weights), mlx issue #2878.
+The runtime descends from the expert-offload patch developed for [oMLX](https://github.com/jundot/omlx) (PR #2595, Apache-2.0; see NOTICE), by way of a measurement program whose adopted levers this package shipped. Related upstream work: mlx PR #4249 (GPU-visible mmap weights, closed), mlx issue #2878.
 
 ## License
 
-Apache-2.0. Portions derive from omlx — see NOTICE.
+Apache-2.0. Portions derive from oMLX; see NOTICE.
